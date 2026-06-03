@@ -1,0 +1,27 @@
+node_modules
+.next
+.turbo
+out
+dist
+build
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+.vercel
+coverage
+prisma/dev.db
+/uploads/
+tmp/
+.idea
+.vscode/*
+!.vscode/extensions.json
+tsconfig.tsbuildinfo
+
+# Ruby / Fastlane bundle (installed at build/deploy time)
+fastlane_runner/vendor/
+fastlane_runner/.bundle/
+native/appgallerycli/appgallerycli
+fastlane_runner/fastlane/report.xml
+fastlane_runner/fastlane/README.md
