@@ -23,6 +23,7 @@
       "PENDING_REVIEW": "Ready for review",
       "REJECTED_BY_USER": "Rejected",
       "UPLOADING_TO_HUAWEI": "Uploading to Huawei",
+      "UPLOADED": "Uploaded — finish in console",
       "SUBMITTED": "Submitted",
       "PUBLISHED": "Published",
       "FAILED": "Failed"

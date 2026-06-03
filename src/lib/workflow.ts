@@ -277,26 +277,40 @@ export async function stepPublishToHuawei(uploadId: string) {
   const changelogPath = await writeChangelog(assetDir, defaultLoc?.whatsNew);
   const privacyPolicyUrl = process.env.PRIVACY_POLICY_URL || undefined;
 
+  // Default: upload the binary + metadata but DON'T submit for review, so the
+  // user can finish the console-only steps (category, content-rating, age
+  // rating) and submit themselves. Set AUTO_SUBMIT_FOR_REVIEW=1 to auto-submit.
+  const autoSubmit = /^(1|true|yes)$/i.test(process.env.AUTO_SUBMIT_FOR_REVIEW ?? "");
+
   await logEvent(
     uploadId,
     "info",
-    `Uploading ${isAab ? "AAB" : "APK"} to AppGallery (app_id ${appId}) and submitting for review`,
+    `Uploading ${isAab ? "AAB" : "APK"} to AppGallery (app_id ${appId})${autoSubmit ? " and submitting for review" : " (no auto-submit)"}`,
   );
   await publishApk(
     {
       appId,
       apkPath: upload.apkPath,
       isAab,
-      submitForReview: true,
+      submitForReview: autoSubmit,
       privacyPolicyUrl,
       changelogPath: changelogPath ?? undefined,
-      delayBeforeSubmitForReview: 20,
+      delayBeforeSubmitForReview: autoSubmit ? 20 : undefined,
     },
     { onLog },
   );
 
-  await setStatus(uploadId, { status: "SUBMITTED", currentStep: "submitted", progress: 100 });
-  await logEvent(uploadId, "info", "Successfully uploaded + submitted to Huawei AppGallery via Fastlane");
+  if (autoSubmit) {
+    await setStatus(uploadId, { status: "SUBMITTED", currentStep: "submitted", progress: 100 });
+    await logEvent(uploadId, "info", "Successfully uploaded + submitted to Huawei AppGallery via Fastlane");
+  } else {
+    await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });
+    await logEvent(
+      uploadId,
+      "info",
+      "APK + metadata uploaded to AppGallery. Set category, content-rating and age rating in the console, then submit for review.",
+    );
+  }
 }
 
 // ---------------------- Orchestrator (called by worker) ----------------------
