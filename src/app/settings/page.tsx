@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { NewHuaweiAppForm } from "@/components/NewHuaweiAppForm";
 import { AiSettingsForm } from "@/components/AiSettingsForm";
+import { AppTemplateForm } from "@/components/AppTemplateForm";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,17 @@ export default async function SettingsPage() {
           manage API keys for OpenAI, DeepSeek, and Gemini.
         </p>
         <AiSettingsForm />
+      </section>
+
+      <section className="card">
+        <h2 className="mb-1 text-lg font-semibold">Publish template (auto-applied after every upload)</h2>
+        <p className="mb-4 text-sm text-neutral-500">
+          These fixed values are applied to the app via the AppGallery Connect API right after each
+          APK upload, so category, content/age rating, privacy policy and distribution countries are
+          always identical. Leave a field blank to skip it. Age-rating questionnaires that Huawei
+          marks console-only are set once and then reused automatically.
+        </p>
+        <AppTemplateForm categories={CATEGORIES} />
       </section>
 
       <section className="card">

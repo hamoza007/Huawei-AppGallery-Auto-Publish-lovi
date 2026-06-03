@@ -7,8 +7,10 @@ import { parseApk } from "./apk-parser";
 import { generateMetadata, translateMetadata } from "./metadata-generator";
 import { TARGET_LOCALES, DEFAULT_LOCALE } from "./locales";
 import { generateScreenshots } from "./screenshots";
-import { resolveAppId, publishApk, updateLocalization } from "./fastlane";
+import { resolveAppId, publishApk, updateLocalization, submitForReview } from "./fastlane";
 import { writeFastlaneMetadata, writeChangelog } from "./fastlane-metadata";
+import { applyAppInfoTemplate, templateIsEmpty } from "./huawei-app-info";
+import { resolveAppTemplate } from "./app-template";
 import type { Upload } from "@prisma/client";
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads");
@@ -271,36 +273,69 @@ export async function stepPublishToHuawei(uploadId: string) {
     });
   }
 
-  // 2) Upload the APK/AAB and submit for review via the plugin's main action.
+  // 2) Upload the APK/AAB via the plugin's main action. We always upload
+  //    WITHOUT submitting here, so the fixed app-info template (step 3) is
+  //    applied before any review submission.
   const defaultLoc =
     upload.localizations.find((l) => l.locale === DEFAULT_LOCALE) ?? upload.localizations[0];
   const changelogPath = await writeChangelog(assetDir, defaultLoc?.whatsNew);
-  const privacyPolicyUrl = process.env.PRIVACY_POLICY_URL || undefined;
+  const template = await resolveAppTemplate();
+  const privacyPolicyUrl = template.privacyPolicy || process.env.PRIVACY_POLICY_URL || undefined;
 
-  // Default: upload the binary + metadata but DON'T submit for review, so the
-  // user can finish the console-only steps (category, content-rating, age
-  // rating) and submit themselves. Set AUTO_SUBMIT_FOR_REVIEW=1 to auto-submit.
+  // Set AUTO_SUBMIT_FOR_REVIEW=1 to submit for review automatically after the
+  // template is applied; default is to stop at UPLOADED so the user submits.
   const autoSubmit = /^(1|true|yes)$/i.test(process.env.AUTO_SUBMIT_FOR_REVIEW ?? "");
 
   await logEvent(
     uploadId,
     "info",
-    `Uploading ${isAab ? "AAB" : "APK"} to AppGallery (app_id ${appId})${autoSubmit ? " and submitting for review" : " (no auto-submit)"}`,
+    `Uploading ${isAab ? "AAB" : "APK"} to AppGallery (app_id ${appId}) (no auto-submit)`,
   );
   await publishApk(
     {
       appId,
       apkPath: upload.apkPath,
       isAab,
-      submitForReview: autoSubmit,
+      submitForReview: false,
       privacyPolicyUrl,
       changelogPath: changelogPath ?? undefined,
-      delayBeforeSubmitForReview: autoSubmit ? 20 : undefined,
     },
     { onLog },
   );
 
+  // 3) Apply the fixed app-info template (category, content/age rating, privacy
+  //    policy, distribution countries, support contacts) via the Connect API.
+  //    The Fastlane plugin does not cover these fields. This keeps every
+  //    release consistent and is also required for submit ("Dist country").
+  if (!templateIsEmpty(template)) {
+    await logEvent(uploadId, "info", "Applying fixed app-info template (category/rating/countries/policy)");
+    try {
+      await applyAppInfoTemplate(appId, template, {
+        onLog: (line) => logEvent(uploadId, "info", `[app-info] ${line}`),
+      });
+    } catch (err) {
+      // Don't fail the whole upload if the template can't be applied (e.g. the
+      // age-rating IARC questionnaire is console-only on this account). The
+      // binary + metadata are already uploaded; surface the issue and let the
+      // user finish in the console.
+      await logEvent(
+        uploadId,
+        "error",
+        `Could not fully apply app-info template: ${(err as Error).message}. Finish remaining fields in the console.`,
+      );
+    }
+  } else {
+    await logEvent(
+      uploadId,
+      "info",
+      "No app-info template configured; set category/rating/countries/policy on the Settings page to automate them.",
+    );
+  }
+
+  // 4) Optionally submit for review (off by default).
   if (autoSubmit) {
+    await logEvent(uploadId, "info", "Submitting app for review");
+    await submitForReview(appId, { onLog });
     await setStatus(uploadId, { status: "SUBMITTED", currentStep: "submitted", progress: 100 });
     await logEvent(uploadId, "info", "Successfully uploaded + submitted to Huawei AppGallery via Fastlane");
   } else {
@@ -308,7 +343,7 @@ export async function stepPublishToHuawei(uploadId: string) {
     await logEvent(
       uploadId,
       "info",
-      "APK + metadata uploaded to AppGallery. Set category, content-rating and age rating in the console, then submit for review.",
+      "APK + metadata + fixed template uploaded. Review in the console and submit for review.",
     );
   }
 }
