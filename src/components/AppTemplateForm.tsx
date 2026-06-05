@@ -3,34 +3,16 @@ import { useEffect, useState } from "react";
 
 interface AppInfoTemplate {
   defaultLang?: string;
-  categoryId?: string;
-  subCategoryId?: string;
-  contentRating?: number;
-  ageRating?: number;
-  privacyPolicy?: string;
+  parentType?: number;
+  childType?: number;
+  grandChildType?: number;
   publishCountry?: string;
-  csEmail?: string;
-  csPhone?: string;
-  csUrl?: string;
+  privacyPolicy?: string;
 }
 
-interface Category {
-  id: number;
-  label: string;
-}
-
-const CONTENT_RATINGS = [
-  { value: "", label: "—" },
-  { value: "1", label: "1 · Everyone" },
-  { value: "2", label: "2 · Pre-teen" },
-  { value: "3", label: "3 · Teen" },
-  { value: "4", label: "4 · Mature" },
-];
-
-const AGE_RATINGS = ["", "3", "7", "12", "16", "18"];
-
-export function AppTemplateForm({ categories }: { categories: Category[] }) {
+export function AppTemplateForm() {
   const [t, setT] = useState<AppInfoTemplate>({});
+  const [captureAppId, setCaptureAppId] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -50,81 +32,86 @@ export function AppTemplateForm({ categories }: { categories: Category[] }) {
     setT((prev) => ({ ...prev, [key]: value }));
   }
 
-  async function save() {
+  async function post(payload: Record<string, unknown>, okMsg: string) {
     setBusy(true);
     setError(null);
     setStatus(null);
     const res = await fetch("/api/app-template", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(t),
+      body: JSON.stringify(payload),
     });
     setBusy(false);
     if (res.ok) {
       const d = (await res.json()) as { template: AppInfoTemplate };
       setT(d.template ?? {});
-      setStatus("Saved. These values are applied automatically after every upload.");
+      setStatus(okMsg);
     } else {
-      setError(await res.text());
+      const d = (await res.json().catch(() => ({}))) as { error?: string };
+      setError(d.error || "Request failed");
     }
   }
+
+  const countryCount = (t.publishCountry ?? "")
+    .split(",")
+    .map((c) => c.trim())
+    .filter(Boolean).length;
 
   if (!loaded) return <p className="text-sm text-neutral-500">Loading template…</p>;
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div>
-          <label className="label">Category</label>
-          <select
-            className="select"
-            value={t.categoryId ?? ""}
-            onChange={(e) => set("categoryId", e.target.value || undefined)}
-          >
-            <option value="">—</option>
-            {categories.map((c) => (
-              <option key={c.id} value={String(c.id)}>
-                {c.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="label">Sub-category ID (optional)</label>
+    <div className="space-y-5">
+      <div className="rounded-md border border-neutral-200 bg-neutral-50 p-3">
+        <label className="label">Capture from a configured app (recommended)</label>
+        <p className="mb-2 text-xs text-neutral-500">
+          Enter the AGC App ID of an app you&apos;ve already set up correctly (category, countries,
+          privacy policy). We read its exact settings via the API and reuse them for every upload —
+          no need to look up category IDs manually.
+        </p>
+        <div className="flex gap-2">
           <input
             className="input"
-            value={t.subCategoryId ?? ""}
-            onChange={(e) => set("subCategoryId", e.target.value || undefined)}
-            placeholder="e.g. 142"
+            value={captureAppId}
+            onChange={(e) => setCaptureAppId(e.target.value)}
+            placeholder="e.g. 117918145"
+          />
+          <button
+            className="btn-primary whitespace-nowrap"
+            disabled={busy || !captureAppId.trim()}
+            onClick={() => post({ captureAppId: captureAppId.trim() }, "Captured settings from app and saved as the template.")}
+          >
+            {busy ? "Working…" : "Capture"}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div>
+          <label className="label">Category · parentType</label>
+          <input
+            className="input"
+            value={t.parentType ?? ""}
+            onChange={(e) => set("parentType", e.target.value ? Number(e.target.value) : undefined)}
+            placeholder="e.g. 2 (Games)"
           />
         </div>
         <div>
-          <label className="label">Content rating</label>
-          <select
-            className="select"
-            value={t.contentRating != null ? String(t.contentRating) : ""}
-            onChange={(e) => set("contentRating", e.target.value ? Number(e.target.value) : undefined)}
-          >
-            {CONTENT_RATINGS.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
+          <label className="label">childType</label>
+          <input
+            className="input"
+            value={t.childType ?? ""}
+            onChange={(e) => set("childType", e.target.value ? Number(e.target.value) : undefined)}
+            placeholder="e.g. 20"
+          />
         </div>
         <div>
-          <label className="label">Age rating</label>
-          <select
-            className="select"
-            value={t.ageRating != null ? String(t.ageRating) : ""}
-            onChange={(e) => set("ageRating", e.target.value ? Number(e.target.value) : undefined)}
-          >
-            {AGE_RATINGS.map((a) => (
-              <option key={a} value={a}>
-                {a === "" ? "—" : `${a}+`}
-              </option>
-            ))}
-          </select>
+          <label className="label">grandChildType</label>
+          <input
+            className="input"
+            value={t.grandChildType ?? ""}
+            onChange={(e) => set("grandChildType", e.target.value ? Number(e.target.value) : undefined)}
+            placeholder="e.g. 10115"
+          />
         </div>
       </div>
 
@@ -139,48 +126,48 @@ export function AppTemplateForm({ categories }: { categories: Category[] }) {
       </div>
 
       <div>
-        <label className="label">Distribution countries (comma-separated ISO codes)</label>
-        <input
-          className="input"
+        <label className="label">
+          Distribution countries{countryCount > 0 ? ` (${countryCount})` : ""}
+        </label>
+        <textarea
+          className="input min-h-[80px] font-mono text-xs"
           value={t.publishCountry ?? ""}
           onChange={(e) => set("publishCountry", e.target.value || undefined)}
-          placeholder="US,GB,DE,FR,AE,SA  (or leave blank to set once in console)"
+          placeholder="US,GB,DE,FR,AE,SA  (comma-separated ISO codes; omit CN for 'all except China')"
         />
         <p className="mt-1 text-xs text-neutral-500">
-          Tip: paste the full list you always use. Once set, Huawei reuses it for every release.
+          Any invalid/duplicate codes and Huawei&apos;s synthetic &quot;ALL&quot; token are stripped automatically on save.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div>
-          <label className="label">Support email</label>
-          <input
-            className="input"
-            value={t.csEmail ?? ""}
-            onChange={(e) => set("csEmail", e.target.value || undefined)}
-            placeholder="support@example.com"
-          />
-        </div>
-        <div>
-          <label className="label">Support phone</label>
-          <input
-            className="input"
-            value={t.csPhone ?? ""}
-            onChange={(e) => set("csPhone", e.target.value || undefined)}
-          />
-        </div>
-        <div>
-          <label className="label">Support URL</label>
-          <input
-            className="input"
-            value={t.csUrl ?? ""}
-            onChange={(e) => set("csUrl", e.target.value || undefined)}
-          />
-        </div>
+      <div>
+        <label className="label">Default language</label>
+        <input
+          className="input"
+          value={t.defaultLang ?? ""}
+          onChange={(e) => set("defaultLang", e.target.value || undefined)}
+          placeholder="en-US"
+        />
       </div>
 
       <div className="flex items-center gap-3">
-        <button className="btn-primary" onClick={save} disabled={busy}>
+        <button
+          className="btn-primary"
+          onClick={() =>
+            post(
+              {
+                defaultLang: t.defaultLang,
+                parentType: t.parentType,
+                childType: t.childType,
+                grandChildType: t.grandChildType,
+                privacyPolicy: t.privacyPolicy,
+                publishCountry: t.publishCountry,
+              },
+              "Saved. These values are applied automatically after every upload.",
+            )
+          }
+          disabled={busy}
+        >
           {busy ? "Saving…" : "Save template"}
         </button>
         {status && <span className="text-sm text-green-600">{status}</span>}
