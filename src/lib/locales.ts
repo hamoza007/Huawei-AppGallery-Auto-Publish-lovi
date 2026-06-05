@@ -5,7 +5,7 @@
 // See: https://developer.huawei.com/consumer/en/doc/AppGallery-connect-Guides/agcapi-publish-language-0000001158245301
 export const TARGET_LOCALES = [
   { bcp47: "en-US", huawei: "en-US", label: "English", rtl: false },
-  { bcp47: "ar-EG", huawei: "ar-EG", label: "العربية", rtl: true },
+  { bcp47: "ar-EG", huawei: "ar", label: "العربية", rtl: true },
   { bcp47: "zh-CN", huawei: "zh-CN", label: "中文 (简体)", rtl: false },
   { bcp47: "zh-TW", huawei: "zh-TW", label: "中文 (繁體)", rtl: false },
   { bcp47: "ru-RU", huawei: "ru-RU", label: "Русский", rtl: false },
