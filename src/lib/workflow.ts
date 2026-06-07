@@ -252,6 +252,14 @@ export async function stepPublishToHuawei(uploadId: string) {
   if (!upload.huaweiApp) throw new Error("HuaweiApp not linked to upload");
   if (!upload.approvedAt) throw new Error("Upload not approved by user");
 
+  // Idempotency guard: once the app has been submitted, Huawei rejects any
+  // further metadata/icon/screenshot edits with error 204144649 ("the app
+  // current state can not allow modify"). Skip re-running on retries.
+  if (upload.status === "SUBMITTED") {
+    await logEvent(uploadId, "info", "App already submitted for review; skipping re-publish.");
+    return;
+  }
+
   await setStatus(uploadId, { status: "UPLOADING_TO_HUAWEI", currentStep: "huawei-upload", progress: 88 });
   const appId = upload.huaweiApp.agcAppId;
   const onLog = (line: string) => logEvent(uploadId, "info", `[fastlane] ${line}`);
