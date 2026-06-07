@@ -337,7 +337,7 @@ export async function stepPublishToHuawei(uploadId: string) {
   if (upload.iconPath) {
     await logEvent(uploadId, "info", "Uploading app icon to Huawei");
     try {
-      await uploadAppIcon(appId, upload.iconPath, {
+      await uploadAppIcon(appId, upload.iconPath, "en-US", {
         onLog: (line) => logEvent(uploadId, "info", `[icon] ${line}`),
       });
     } catch (err) {

@@ -194,6 +194,7 @@ export async function applyAppInfoTemplate(
 export async function uploadAppIcon(
   appId: string,
   iconPath: string,
+  lang: string = "en-US",
   opts: ApplyOptions = {},
 ): Promise<void> {
   const creds = opts.creds ?? huaweiCredsFromEnv();
@@ -264,6 +265,7 @@ export async function uploadAppIcon(
     },
     body: JSON.stringify({
       fileType: 0,
+      lang,
       files: [{ fileName, fileDestUrl: urlData.urlInfo.objectId }],
     }),
   });
