@@ -1,0 +1,155 @@
+# Fastfile wrapping the shr3jn/fastlane-plugin-huawei_appgallery_connect plugin.
+#
+# This is the ONLY place the app talks to Huawei AppGallery Connect. The Next.js
+# backend shells out to these lanes (see src/lib/fastlane.ts) instead of
+# hand-rolling the AppGallery publishing API.
+#
+# Credentials are read from the environment so secrets never appear on the
+# command line:
+#   HUAWEI_AGC_CLIENT_ID
+#   HUAWEI_AGC_CLIENT_SECRET
+#
+# Every lane writes a small JSON result to the file passed as `out:` so the
+# Node wrapper can parse a clean result regardless of fastlane's chatty stdout.
+
+require "json"
+
+default_platform(:android)
+
+def agc_client_id
+  id = ENV["HUAWEI_AGC_CLIENT_ID"]
+  UI.user_error!("HUAWEI_AGC_CLIENT_ID is not set") if id.nil? || id.empty?
+  id
+end
+
+def agc_client_secret
+  secret = ENV["HUAWEI_AGC_CLIENT_SECRET"]
+  UI.user_error!("HUAWEI_AGC_CLIENT_SECRET is not set") if secret.nil? || secret.empty?
+  secret
+end
+
+def truthy?(value)
+  ["true", "1", "yes"].include?(value.to_s.strip.downcase)
+end
+
+def write_result(options, data)
+  out = options[:out]
+  return if out.nil? || out.to_s.empty?
+  File.write(out, JSON.generate(data))
+end
+
+platform :android do
+  # Resolve the AppGallery app_id from an APK/AAB package name.
+  desc "Resolve AGC app_id from package name"
+  lane :get_app_id do |options|
+    begin
+      app_id = huawei_appgallery_connect_get_app_id(
+        client_id: agc_client_id,
+        client_secret: agc_client_secret,
+        package_id: options[:package_id]
+      )
+    rescue NoMethodError
+      # The plugin raises when the appid-list response has no entry for the
+      # package (i.e. the app does not exist yet under this account). Treat that
+      # as "not found" rather than a hard failure.
+      app_id = nil
+    end
+    UI.message("RESOLVED_APP_ID=#{app_id}")
+    write_result(options, { ok: true, app_id: app_id.nil? ? nil : app_id.to_s })
+  end
+
+  # Read back app info / status.
+  desc "Get app info"
+  lane :get_app_info do |options|
+    info = huawei_appgallery_connect_get_app_info(
+      client_id: agc_client_id,
+      client_secret: agc_client_secret,
+      app_id: options[:app_id]
+    )
+    write_result(options, { ok: true, info: info })
+  end
+
+  # Push localized metadata (app_name / app_description / introduction /
+  # release_notes) from a fastlane/metadata/huawei/<locale>/ folder structure.
+  desc "Update localized metadata"
+  lane :update_localization do |options|
+    huawei_appgallery_connect_update_app_localization(
+      client_id: agc_client_id,
+      client_secret: agc_client_secret,
+      app_id: options[:app_id],
+      metadata_path: options[:metadata_path]
+    )
+    write_result(options, { ok: true })
+  end
+
+  # Upload the APK/AAB and (optionally) submit for review.
+  desc "Upload APK/AAB and optionally submit for review"
+  lane :publish do |options|
+    args = {
+      client_id: agc_client_id,
+      client_secret: agc_client_secret,
+      app_id: options[:app_id],
+      apk_path: options[:apk_path],
+      submit_for_review: truthy?(options[:submit_for_review])
+    }
+
+    args[:is_aab] = true if truthy?(options[:is_aab])
+    args[:privacy_policy_url] = options[:privacy_policy_url] unless options[:privacy_policy_url].to_s.empty?
+    args[:changelog_path] = options[:changelog_path] unless options[:changelog_path].to_s.empty?
+    args[:delay_before_submit_for_review] = options[:delay_before_submit_for_review].to_i unless options[:delay_before_submit_for_review].to_s.empty?
+    args[:release_time] = options[:release_time] unless options[:release_time].to_s.empty?
+
+    # Phased / staged rollout
+    if truthy?(options[:phase_wise_release])
+      args[:phase_wise_release] = true
+      args[:phase_release_start_time] = options[:phase_release_start_time] unless options[:phase_release_start_time].to_s.empty?
+      args[:phase_release_end_time] = options[:phase_release_end_time] unless options[:phase_release_end_time].to_s.empty?
+      args[:phase_release_percent] = options[:phase_release_percent] unless options[:phase_release_percent].to_s.empty?
+      args[:phase_release_description] = options[:phase_release_description] unless options[:phase_release_description].to_s.empty?
+    end
+
+    # Open-testing configuration
+    if truthy?(options[:use_testing_version])
+      args[:use_testing_version] = true
+      args[:skip_manual_review] = truthy?(options[:skip_manual_review])
+      args[:test_start_time] = options[:test_start_time] unless options[:test_start_time].to_s.empty?
+      args[:test_end_time] = options[:test_end_time] unless options[:test_end_time].to_s.empty?
+      args[:feedback_email] = options[:feedback_email] unless options[:feedback_email].to_s.empty?
+    end
+
+    huawei_appgallery_connect(args)
+    write_result(options, { ok: true })
+  end
+
+  # Submit later if the upload was done with submit_for_review: false.
+  desc "Submit for review"
+  lane :submit_for_review do |options|
+    args = {
+      client_id: agc_client_id,
+      client_secret: agc_client_secret,
+      app_id: options[:app_id]
+    }
+    args[:release_time] = options[:release_time] unless options[:release_time].to_s.empty?
+    if truthy?(options[:phase_wise_release])
+      args[:phase_wise_release] = true
+      args[:phase_release_start_time] = options[:phase_release_start_time] unless options[:phase_release_start_time].to_s.empty?
+      args[:phase_release_end_time] = options[:phase_release_end_time] unless options[:phase_release_end_time].to_s.empty?
+      args[:phase_release_percent] = options[:phase_release_percent] unless options[:phase_release_percent].to_s.empty?
+      args[:phase_release_description] = options[:phase_release_description] unless options[:phase_release_description].to_s.empty?
+    end
+    huawei_appgallery_connect_submit_for_review(args)
+    write_result(options, { ok: true })
+  end
+
+  # Declare whether the app depends on GMS (1: yes, 0: no).
+  desc "Set GMS dependency"
+  lane :set_gms_dependency do |options|
+    huawei_appgallery_connect_set_gms_dependency(
+      client_id: agc_client_id,
+      client_secret: agc_client_secret,
+      app_id: options[:app_id],
+      gms_dependency: options[:gms_dependency].to_i
+    )
+    write_result(options, { ok: true })
+  end
+end
