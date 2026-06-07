@@ -16,6 +16,8 @@
 //    include a synthetic "ALL" token which the PUT rejects, so we always strip it.
 //  - contentRate / age rating come from the console IARC questionnaire and are
 //    NOT writable here, so they are intentionally omitted.
+import { promises as fs } from "fs";
+import path from "path";
 import { huaweiCredsFromEnv, type FastlaneCredentials } from "./fastlane";
 
 const CONNECT_BASE = "https://connect-api.cloud.huawei.com/api";
@@ -177,4 +179,106 @@ export async function applyAppInfoTemplate(
     throw new Error(`app-info update failed (code ${code}): ${body.ret?.msg ?? text}`);
   }
   await opts.onLog?.("App-info template applied successfully");
+}
+
+// ---------------------- App Icon Upload ----------------------
+
+// Upload the app icon to Huawei AppGallery Connect via the Publishing API.
+// This is required before submit-for-review — the API returns error 204144660
+// ("AppIcon is necessary!") if no icon has been uploaded.
+//
+// Flow:
+//   1) GET /api/publish/v2/upload-url/for-obs?appId=X&fileName=icon.png&contentLength=Y&suffix=png
+//   2) PUT the icon bytes to the returned OBS URL
+//   3) PUT /api/publish/v2/app-file-info with fileType=1 (icon)
+export async function uploadAppIcon(
+  appId: string,
+  iconPath: string,
+  opts: ApplyOptions = {},
+): Promise<void> {
+  const creds = opts.creds ?? huaweiCredsFromEnv();
+  const token = await getConnectToken(creds);
+
+  // Read the icon file
+  const iconBuffer = await fs.readFile(iconPath);
+  const fileName = path.basename(iconPath);
+  const fileSize = iconBuffer.byteLength;
+
+  await opts.onLog?.(`Uploading app icon (${fileName}, ${fileSize} bytes)`);
+
+  // 1) Get upload URL for the icon (suffix = png)
+  const suffix = path.extname(iconPath).replace(".", "") || "png";
+  const uploadUrlEndpoint =
+    `${CONNECT_BASE}/publish/v2/upload-url/for-obs?appId=${encodeURIComponent(appId)}` +
+    `&fileName=${encodeURIComponent(fileName)}&contentLength=${fileSize}&suffix=${suffix}`;
+
+  const urlRes = await fetch(uploadUrlEndpoint, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      client_id: creds.clientId,
+    },
+  });
+  if (!urlRes.ok) {
+    throw new Error(`Failed to get icon upload URL (HTTP ${urlRes.status}): ${await urlRes.text()}`);
+  }
+  const urlData = (await urlRes.json()) as {
+    urlInfo?: { url?: string; objectId?: string; headers?: Record<string, string> };
+    ret?: { code?: number; msg?: string };
+  };
+  if ((urlData.ret?.code ?? 0) !== 0) {
+    throw new Error(`Failed to get icon upload URL (code ${urlData.ret?.code}): ${urlData.ret?.msg}`);
+  }
+  if (!urlData.urlInfo?.url || !urlData.urlInfo?.objectId) {
+    throw new Error("No upload URL returned for icon");
+  }
+
+  // 2) Upload the icon to OBS
+  const obsUrl = urlData.urlInfo.url;
+  const obsHeaders: Record<string, string> = {};
+  if (urlData.urlInfo.headers) {
+    for (const [k, v] of Object.entries(urlData.urlInfo.headers)) {
+      obsHeaders[k] = v;
+    }
+  }
+  obsHeaders["Content-Type"] = "application/octet-stream";
+
+  const obsRes = await fetch(obsUrl, {
+    method: "PUT",
+    headers: obsHeaders,
+    body: iconBuffer,
+  });
+  if (!obsRes.ok) {
+    throw new Error(`Failed to upload icon to OBS (HTTP ${obsRes.status}): ${await obsRes.text()}`);
+  }
+  await opts.onLog?.("Icon uploaded to OBS storage");
+
+  // 3) Register the uploaded icon file with fileType=1 (app icon)
+  const fileInfoUrl = `${CONNECT_BASE}/publish/v2/app-file-info?appId=${encodeURIComponent(appId)}`;
+  const fileInfoRes = await fetch(fileInfoUrl, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      client_id: creds.clientId,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      fileType: 1,
+      files: [{ fileName, fileDestUrl: urlData.urlInfo.objectId }],
+    }),
+  });
+  const fileInfoText = await fileInfoRes.text();
+  if (!fileInfoRes.ok) {
+    throw new Error(`Failed to register icon file (HTTP ${fileInfoRes.status}): ${fileInfoText}`);
+  }
+  let fileInfoBody: RetEnvelope = {};
+  try {
+    fileInfoBody = JSON.parse(fileInfoText) as RetEnvelope;
+  } catch {
+    // Non-JSON 2xx is success
+  }
+  const code = fileInfoBody.ret?.code ?? 0;
+  if (code !== 0) {
+    throw new Error(`Failed to register icon file (code ${code}): ${fileInfoBody.ret?.msg ?? fileInfoText}`);
+  }
+  await opts.onLog?.("App icon registered successfully");
 }

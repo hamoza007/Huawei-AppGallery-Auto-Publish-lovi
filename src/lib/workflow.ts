@@ -9,7 +9,7 @@ import { TARGET_LOCALES, DEFAULT_LOCALE } from "./locales";
 import { generateScreenshots } from "./screenshots";
 import { resolveAppId, publishApk, updateLocalization, submitForReview } from "./fastlane";
 import { writeFastlaneMetadata, writeChangelog } from "./fastlane-metadata";
-import { applyAppInfoTemplate, templateIsEmpty } from "./huawei-app-info";
+import { applyAppInfoTemplate, templateIsEmpty, uploadAppIcon } from "./huawei-app-info";
 import { resolveAppTemplate } from "./app-template";
 import type { Upload } from "@prisma/client";
 
@@ -332,7 +332,26 @@ export async function stepPublishToHuawei(uploadId: string) {
     );
   }
 
-  // 4) Optionally submit for review (off by default).
+  // 4) Upload the app icon — required before submit-for-review.
+  //    Huawei returns error 204144660 ("AppIcon is necessary!") without this.
+  if (upload.iconPath) {
+    await logEvent(uploadId, "info", "Uploading app icon to Huawei");
+    try {
+      await uploadAppIcon(appId, upload.iconPath, {
+        onLog: (line) => logEvent(uploadId, "info", `[icon] ${line}`),
+      });
+    } catch (err) {
+      await logEvent(
+        uploadId,
+        "error",
+        `Icon upload failed: ${(err as Error).message}. Submit may fail with "AppIcon is necessary".`,
+      );
+    }
+  } else {
+    await logEvent(uploadId, "warn", "No icon extracted from APK; submit may fail with AppIcon error");
+  }
+
+  // 5) Optionally submit for review (off by default).
   if (autoSubmit) {
     await logEvent(uploadId, "info", "Submitting app for review");
     await submitForReview(appId, { onLog });
