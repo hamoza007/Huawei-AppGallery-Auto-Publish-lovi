@@ -252,9 +252,10 @@ export async function uploadAppIcon(
   }
   await opts.onLog?.("Icon uploaded to OBS storage");
 
-  // 3) Register the uploaded icon file with fileType=1 (app icon)
-  const fileInfoUrl = `${CONNECT_BASE}/publish/v2/app-file-info?appId=${encodeURIComponent(appId)}`;
-  const fileInfoRes = await fetch(fileInfoUrl, {
+  // 3) Register the uploaded icon via PUT /api/publish/v2/app-info
+  //    Using app-info endpoint instead of app-file-info to avoid videoShowType validation issues
+  const appInfoUrl = `${CONNECT_BASE}/publish/v2/app-info?appId=${encodeURIComponent(appId)}`;
+  const fileInfoRes = await fetch(appInfoUrl, {
     method: "PUT",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -262,13 +263,12 @@ export async function uploadAppIcon(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      fileType: 1,
-      files: [{ fileName, fileDestUrl: urlData.urlInfo.objectId }],
+      icon: urlData.urlInfo.objectId,
     }),
   });
   const fileInfoText = await fileInfoRes.text();
   if (!fileInfoRes.ok) {
-    throw new Error(`Failed to register icon file (HTTP ${fileInfoRes.status}): ${fileInfoText}`);
+    throw new Error(`Failed to register icon via app-info (HTTP ${fileInfoRes.status}): ${fileInfoText}`);
   }
   let fileInfoBody: RetEnvelope = {};
   try {
@@ -278,7 +278,30 @@ export async function uploadAppIcon(
   }
   const code = fileInfoBody.ret?.code ?? 0;
   if (code !== 0) {
-    throw new Error(`Failed to register icon file (code ${code}): ${fileInfoBody.ret?.msg ?? fileInfoText}`);
+    // If app-info approach fails, try the file-info endpoint as fallback
+    await opts.onLog?.(`app-info icon approach failed (code ${code}), trying file-info endpoint`);
+    const fileInfoUrl2 = `${CONNECT_BASE}/publish/v2/app-file-info?appId=${encodeURIComponent(appId)}`;
+    const fileInfoRes2 = await fetch(fileInfoUrl2, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        client_id: creds.clientId,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fileType: 1,
+        files: [{ fileName, fileDestUrl: urlData.urlInfo.objectId }],
+      }),
+    });
+    const fileInfoText2 = await fileInfoRes2.text();
+    let fileInfoBody2: RetEnvelope = {};
+    try {
+      fileInfoBody2 = JSON.parse(fileInfoText2) as RetEnvelope;
+    } catch { /* ok */ }
+    const code2 = fileInfoBody2.ret?.code ?? 0;
+    if (code2 !== 0) {
+      throw new Error(`Failed to register icon file (code ${code2}): ${fileInfoBody2.ret?.msg ?? fileInfoText2}`);
+    }
   }
   await opts.onLog?.("App icon registered successfully");
 }
