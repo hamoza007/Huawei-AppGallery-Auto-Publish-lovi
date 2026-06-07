@@ -285,3 +285,106 @@ export async function uploadAppIcon(
   }
   await opts.onLog?.("App icon registered successfully");
 }
+
+/**
+ * Upload screenshots to Huawei AppGallery Connect.
+ * fileType 2 = screenshots. Requires at least 3 images.
+ */
+export async function uploadScreenshots(
+  appId: string,
+  screenshotPaths: string[],
+  lang: string = "en-US",
+  opts: ApplyOptions = {},
+): Promise<void> {
+  if (screenshotPaths.length < 3) {
+    throw new Error(`Huawei requires at least 3 screenshots, got ${screenshotPaths.length}`);
+  }
+  const creds = opts.creds ?? huaweiCredsFromEnv();
+  const token = await getConnectToken(creds);
+
+  await opts.onLog?.(`Uploading ${screenshotPaths.length} screenshots for locale ${lang}`);
+
+  const uploadedFiles: { fileName: string; fileDestUrl: string }[] = [];
+
+  for (let i = 0; i < screenshotPaths.length; i++) {
+    const ssPath = screenshotPaths[i];
+    const buffer = await fs.readFile(ssPath);
+    const fileName = path.basename(ssPath);
+    const fileSize = buffer.byteLength;
+    const suffix = path.extname(ssPath).replace(".", "") || "png";
+
+    // Get upload URL
+    const uploadUrlEndpoint =
+      `${CONNECT_BASE}/publish/v2/upload-url/for-obs?appId=${encodeURIComponent(appId)}` +
+      `&fileName=${encodeURIComponent(fileName)}&contentLength=${fileSize}&suffix=${suffix}`;
+
+    const urlRes = await fetch(uploadUrlEndpoint, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        client_id: creds.clientId,
+      },
+    });
+    if (!urlRes.ok) {
+      throw new Error(`Failed to get screenshot upload URL (HTTP ${urlRes.status})`);
+    }
+    const urlData = (await urlRes.json()) as {
+      urlInfo?: { url?: string; objectId?: string; headers?: Record<string, string> };
+      ret?: { code?: number; msg?: string };
+    };
+    if ((urlData.ret?.code ?? 0) !== 0 || !urlData.urlInfo?.url || !urlData.urlInfo?.objectId) {
+      throw new Error(`Failed to get upload URL for screenshot ${i + 1}`);
+    }
+
+    // Upload to OBS
+    const obsHeaders: Record<string, string> = {};
+    if (urlData.urlInfo.headers) {
+      for (const [k, v] of Object.entries(urlData.urlInfo.headers)) {
+        obsHeaders[k] = v;
+      }
+    }
+    obsHeaders["Content-Type"] = "application/octet-stream";
+
+    const obsRes = await fetch(urlData.urlInfo.url, {
+      method: "PUT",
+      headers: obsHeaders,
+      body: buffer,
+    });
+    if (!obsRes.ok) {
+      throw new Error(`Failed to upload screenshot ${i + 1} to OBS (HTTP ${obsRes.status})`);
+    }
+
+    uploadedFiles.push({ fileName, fileDestUrl: urlData.urlInfo.objectId });
+    await opts.onLog?.(`Screenshot ${i + 1}/${screenshotPaths.length} uploaded to OBS`);
+  }
+
+  // Register all screenshots with fileType=2
+  const fileInfoUrl = `${CONNECT_BASE}/publish/v2/app-file-info?appId=${encodeURIComponent(appId)}`;
+  const fileInfoRes = await fetch(fileInfoUrl, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      client_id: creds.clientId,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      fileType: 2,
+      lang,
+      files: uploadedFiles,
+    }),
+  });
+  const fileInfoText = await fileInfoRes.text();
+  if (!fileInfoRes.ok) {
+    throw new Error(`Failed to register screenshots (HTTP ${fileInfoRes.status}): ${fileInfoText}`);
+  }
+  let fileInfoBody: RetEnvelope = {};
+  try {
+    fileInfoBody = JSON.parse(fileInfoText) as RetEnvelope;
+  } catch {
+    // Non-JSON 2xx is success
+  }
+  const code = fileInfoBody.ret?.code ?? 0;
+  if (code !== 0) {
+    throw new Error(`Failed to register screenshots (code ${code}): ${fileInfoBody.ret?.msg ?? fileInfoText}`);
+  }
+  await opts.onLog?.(`${uploadedFiles.length} screenshots registered successfully`);
+}

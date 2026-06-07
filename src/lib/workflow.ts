@@ -9,7 +9,7 @@ import { TARGET_LOCALES, DEFAULT_LOCALE } from "./locales";
 import { generateScreenshots } from "./screenshots";
 import { resolveAppId, publishApk, updateLocalization, submitForReview } from "./fastlane";
 import { writeFastlaneMetadata, writeChangelog } from "./fastlane-metadata";
-import { applyAppInfoTemplate, templateIsEmpty, uploadAppIcon } from "./huawei-app-info";
+import { applyAppInfoTemplate, templateIsEmpty, uploadAppIcon, uploadScreenshots } from "./huawei-app-info";
 import { resolveAppTemplate } from "./app-template";
 import type { Upload } from "@prisma/client";
 
@@ -351,7 +351,36 @@ export async function stepPublishToHuawei(uploadId: string) {
     await logEvent(uploadId, "warn", "No icon extracted from APK; submit may fail with AppIcon error");
   }
 
-  // 5) Optionally submit for review (off by default).
+  // 5) Upload screenshots — Huawei requires at least 3.
+  if (upload.screenshots && upload.screenshots.length >= 3) {
+    await logEvent(uploadId, "info", `Uploading ${upload.screenshots.length} screenshots to Huawei`);
+    try {
+      const screenshotPaths = upload.screenshots
+        .sort((a, b) => a.ordering - b.ordering)
+        .map((s) => s.path);
+      await uploadScreenshots(appId, screenshotPaths, "en-US", {
+        onLog: (line) => logEvent(uploadId, "info", `[screenshots] ${line}`),
+      });
+      await prisma.screenshot.updateMany({
+        where: { uploadId },
+        data: { uploadedToHuaweiAt: new Date() },
+      });
+    } catch (err) {
+      await logEvent(
+        uploadId,
+        "error",
+        `Screenshot upload failed: ${(err as Error).message}. Submit may fail with "ScreenShots is necessary".`,
+      );
+    }
+  } else {
+    await logEvent(
+      uploadId,
+      "warn",
+      `Only ${upload.screenshots?.length ?? 0} screenshots available (need at least 3). Submit may fail.`,
+    );
+  }
+
+  // 6) Optionally submit for review (off by default).
   if (autoSubmit) {
     await logEvent(uploadId, "info", "Submitting app for review");
     await submitForReview(appId, { onLog });
