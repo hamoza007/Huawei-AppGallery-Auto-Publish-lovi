@@ -252,8 +252,8 @@ export async function uploadAppIcon(
   }
   await opts.onLog?.("Icon uploaded to OBS storage");
 
-  // 3) Register the uploaded icon file with fileType=1 (app icon)
-  //    Include videoShowType=1 to pass Huawei's full-state validation
+  // 3) Register the uploaded icon file with fileType=0 (app icon)
+  //    Note: fileType 0 = icon, 1 = video/poster, 2 = screenshot, 5 = APK/RPK
   const fileInfoUrl = `${CONNECT_BASE}/publish/v2/app-file-info?appId=${encodeURIComponent(appId)}`;
   const fileInfoRes = await fetch(fileInfoUrl, {
     method: "PUT",
@@ -263,9 +263,8 @@ export async function uploadAppIcon(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      fileType: 1,
+      fileType: 0,
       files: [{ fileName, fileDestUrl: urlData.urlInfo.objectId }],
-      videoShowType: 1,
     }),
   });
   const fileInfoText = await fileInfoRes.text();
