@@ -61,6 +61,81 @@ function extractLabel(labelField: unknown): string {
   return "";
 }
 
+// Extract the largest launcher icon PNG directly from the APK zip. This is a
+// fallback for when app-info-parser fails to surface the icon as base64 (some
+// APKs store the icon in a way the parser can't decode). We scan the zip for
+// mipmap/drawable PNGs whose name looks like a launcher icon and pick the one
+// with the highest pixel area.
+async function extractIconFromZip(apkPath: string, outDir: string): Promise<string | null> {
+  try {
+    const AdmZip = (await import("adm-zip")).default;
+    const zip = new AdmZip(apkPath);
+    const entries = zip.getEntries();
+
+    // The launcher icon is conventionally a mipmap/drawable PNG named
+    // ic_launcher.png / icon.png / app_icon.png. We avoid round variants,
+    // adaptive-icon layers (foreground/background) and unrelated assets like
+    // notification or third-party SDK icons.
+    const isLauncherName = (basename: string): boolean => {
+      return (
+        basename === "ic_launcher.png" ||
+        basename === "icon.png" ||
+        basename === "app_icon.png" ||
+        basename === "ic_launcher_foreground.png"
+      );
+    };
+
+    const candidates = entries.filter((e) => {
+      const n = e.entryName.toLowerCase();
+      const base = n.split("/").pop() ?? n;
+      return (
+        !e.isDirectory &&
+        n.endsWith(".png") &&
+        (n.includes("mipmap") || n.includes("drawable")) &&
+        isLauncherName(base) &&
+        !n.includes("round")
+      );
+    });
+
+    // Decode each candidate and keep the one with the largest pixel area — this
+    // reliably picks the real high-density launcher icon over tiny noise PNGs.
+    let best: { raw: Buffer; w: number; h: number } | null = null;
+    for (const entry of candidates) {
+      const raw = entry.getData();
+      try {
+        const meta = await sharp(raw).metadata();
+        const w = meta.width ?? 0;
+        const h = meta.height ?? 0;
+        if (w === 0 || h === 0) continue;
+        if (!best || w * h > best.w * best.h) best = { raw, w, h };
+      } catch {
+        continue;
+      }
+    }
+
+    if (!best) return null;
+
+    const pngPath = path.join(outDir, "icon.png");
+    if (best.w < REQUIRED_ICON_SIZE || best.h < REQUIRED_ICON_SIZE) {
+      await sharp(best.raw)
+        .resize(REQUIRED_ICON_SIZE, REQUIRED_ICON_SIZE, {
+          fit: "contain",
+          background: { r: 255, g: 255, b: 255, alpha: 0 },
+        })
+        .png()
+        .toFile(pngPath);
+    } else {
+      await sharp(best.raw)
+        .resize(REQUIRED_ICON_SIZE, REQUIRED_ICON_SIZE, { fit: "cover" })
+        .png()
+        .toFile(pngPath);
+    }
+    return pngPath;
+  } catch {
+    return null;
+  }
+}
+
 function pickBase64Icon(icon: unknown): string | null {
   const candidates: IconValue[] = Array.isArray(icon) ? (icon as IconValue[]) : icon ? [icon as IconValue] : [];
   for (const c of candidates) {
@@ -114,6 +189,12 @@ export async function parseApk(apkPath: string, outDir: string): Promise<ParsedA
     } catch {
       iconPngPath = null;
     }
+  }
+
+  // Fallback: if the parser couldn't give us a usable icon, pull it straight
+  // out of the APK zip's mipmap/drawable resources.
+  if (!iconPngPath) {
+    iconPngPath = await extractIconFromZip(apkPath, outDir);
   }
 
   return {
