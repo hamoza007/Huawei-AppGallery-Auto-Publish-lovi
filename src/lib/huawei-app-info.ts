@@ -96,10 +96,8 @@ function buildPayload(t: AppInfoTemplate): Record<string, unknown> {
   const pc = sanitizeCountries(t.publishCountry);
   if (pc) p.publishCountry = pc;
   if (t.privacyPolicy) p.privacyPolicy = t.privacyPolicy;
-  if (t.deviceTypes) {
-    const ids = t.deviceTypes.split(",").map((s) => Number(s.trim())).filter(Number.isFinite);
-    if (ids.length > 0) p.deviceTypes = ids.map((id) => ({ deviceType: id }));
-  }
+  // deviceTypes is set at app creation; sending it in updateAppInfo causes
+  // "deviceTypes can not be chosen all" errors — omit from payload.
   if (typeof t.isFree === "boolean") p.isFree = t.isFree ? 1 : 0;
   return p;
 }
