@@ -98,7 +98,7 @@ function buildPayload(t: AppInfoTemplate): Record<string, unknown> {
   if (t.privacyPolicy) p.privacyPolicy = t.privacyPolicy;
   if (t.deviceTypes) {
     const ids = t.deviceTypes.split(",").map((s) => Number(s.trim())).filter(Number.isFinite);
-    if (ids.length > 0) p.deviceTypes = ids;
+    if (ids.length > 0) p.deviceTypes = ids.map((id) => ({ deviceType: id }));
   }
   if (typeof t.isFree === "boolean") p.isFree = t.isFree ? 1 : 0;
   return p;
