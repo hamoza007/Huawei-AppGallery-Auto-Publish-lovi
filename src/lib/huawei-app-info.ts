@@ -31,7 +31,7 @@ export interface AppInfoTemplate {
   // Comma-separated ISO country/region codes (no "ALL" token).
   publishCountry?: string;
   privacyPolicy?: string;
-  // Device compatibility: 1 = Mobile Phone, 2 = Tablet (comma-separated IDs).
+  // Device compatibility: 4 = Mobile Phone, 6 = Tablet (comma-separated IDs).
   deviceTypes?: string;
   // Payment: true = free app.
   isFree?: boolean;

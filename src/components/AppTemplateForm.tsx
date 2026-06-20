@@ -106,7 +106,7 @@ export function AppTemplateForm() {
       childType: 20,
       grandChildType: 10115,
       isGameCasual: true,
-      deviceTypes: "1,2",
+      deviceTypes: "4,6",
       isFree: true,
       collectPersonalData: false,
       genAiNotInvolved: true,
@@ -184,10 +184,10 @@ export function AppTemplateForm() {
           <label className="flex items-center gap-1.5 text-sm">
             <input
               type="checkbox"
-              checked={(t.deviceTypes ?? "").includes("1")}
+              checked={(t.deviceTypes ?? "").includes("4")}
               onChange={(e) => {
                 const ids = new Set((t.deviceTypes ?? "").split(",").filter(Boolean));
-                if (e.target.checked) ids.add("1"); else ids.delete("1");
+                if (e.target.checked) ids.add("4"); else ids.delete("4");
                 set("deviceTypes", [...ids].join(",") || undefined);
               }}
             />
@@ -196,10 +196,10 @@ export function AppTemplateForm() {
           <label className="flex items-center gap-1.5 text-sm">
             <input
               type="checkbox"
-              checked={(t.deviceTypes ?? "").includes("2")}
+              checked={(t.deviceTypes ?? "").includes("6")}
               onChange={(e) => {
                 const ids = new Set((t.deviceTypes ?? "").split(",").filter(Boolean));
-                if (e.target.checked) ids.add("2"); else ids.delete("2");
+                if (e.target.checked) ids.add("6"); else ids.delete("6");
                 set("deviceTypes", [...ids].join(",") || undefined);
               }}
             />
