@@ -19,6 +19,14 @@ interface SaveBody {
   grandChildType?: number | string;
   privacyPolicy?: string;
   publishCountry?: string;
+  deviceTypes?: string;
+  isFree?: boolean;
+  collectPersonalData?: boolean;
+  genAiNotInvolved?: boolean;
+  releaseImmediately?: boolean;
+  autoSubmitForReview?: boolean;
+  autoContentRating?: boolean;
+  isGameCasual?: boolean;
 }
 
 function num(v: number | string | undefined): number | undefined {
@@ -47,6 +55,14 @@ export async function POST(req: Request) {
     grandChildType: num(body.grandChildType),
     privacyPolicy: body.privacyPolicy?.trim() || undefined,
     publishCountry: body.publishCountry || undefined,
+    deviceTypes: body.deviceTypes?.trim() || undefined,
+    isFree: typeof body.isFree === "boolean" ? body.isFree : undefined,
+    collectPersonalData: typeof body.collectPersonalData === "boolean" ? body.collectPersonalData : undefined,
+    genAiNotInvolved: typeof body.genAiNotInvolved === "boolean" ? body.genAiNotInvolved : undefined,
+    releaseImmediately: typeof body.releaseImmediately === "boolean" ? body.releaseImmediately : undefined,
+    autoSubmitForReview: typeof body.autoSubmitForReview === "boolean" ? body.autoSubmitForReview : undefined,
+    autoContentRating: typeof body.autoContentRating === "boolean" ? body.autoContentRating : undefined,
+    isGameCasual: typeof body.isGameCasual === "boolean" ? body.isGameCasual : undefined,
   };
   await saveAppTemplate(template);
   const saved = await resolveAppTemplate();

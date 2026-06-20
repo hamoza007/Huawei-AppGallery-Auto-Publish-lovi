@@ -40,10 +40,10 @@ export default async function SettingsPage() {
       <section className="card">
         <h2 className="mb-1 text-lg font-semibold">Publish template (auto-applied after every upload)</h2>
         <p className="mb-4 text-sm text-neutral-500">
-          These fixed values are applied to the app via the AppGallery Connect API right after each
-          APK upload, so category, privacy policy and distribution countries are always identical.
-          Easiest path: enter an already-configured AGC App ID and click Capture. Content/age-rating
-          questionnaires that Huawei marks console-only are set once and then reused automatically.
+          These values are applied automatically after each APK upload: category, device types,
+          payment, privacy policy, distribution countries, content rating questionnaire, AI
+          declaration, and release timing. Use &quot;Full auto&quot; for a one-click preset or
+          customize each field. Enable &quot;Auto-submit&quot; to skip the Huawei console entirely.
         </p>
         <AppTemplateForm />
       </section>

@@ -9,7 +9,7 @@ import { TARGET_LOCALES, DEFAULT_LOCALE } from "./locales";
 import { generateScreenshots } from "./screenshots";
 import { resolveAppId, publishApk, updateLocalization, submitForReview } from "./fastlane";
 import { writeFastlaneMetadata, writeChangelog } from "./fastlane-metadata";
-import { applyAppInfoTemplate, templateIsEmpty, uploadAppIcon, uploadScreenshots } from "./huawei-app-info";
+import { applyAppInfoTemplate, templateIsEmpty, uploadAppIcon, uploadScreenshots, submitAgeRatingAllNo } from "./huawei-app-info";
 import { resolveAppTemplate } from "./app-template";
 import type { Upload } from "@prisma/client";
 
@@ -290,9 +290,8 @@ export async function stepPublishToHuawei(uploadId: string) {
   const template = await resolveAppTemplate();
   const privacyPolicyUrl = template.privacyPolicy || process.env.PRIVACY_POLICY_URL || undefined;
 
-  // Set AUTO_SUBMIT_FOR_REVIEW=1 to submit for review automatically after the
-  // template is applied; default is to stop at UPLOADED so the user submits.
-  const autoSubmit = /^(1|true|yes)$/i.test(process.env.AUTO_SUBMIT_FOR_REVIEW ?? "");
+  // Auto-submit is driven by the template flag (preferred) or env var fallback.
+  const autoSubmit = template.autoSubmitForReview ?? /^(1|true|yes)$/i.test(process.env.AUTO_SUBMIT_FOR_REVIEW ?? "");
 
   await logEvent(
     uploadId,
@@ -388,7 +387,23 @@ export async function stepPublishToHuawei(uploadId: string) {
     );
   }
 
-  // 6) Optionally submit for review (off by default).
+  // 6) Auto-answer the content rating questionnaire (all "No") if configured.
+  if (template.autoContentRating) {
+    await logEvent(uploadId, "info", "Auto-answering content rating questionnaire (all No)");
+    try {
+      await submitAgeRatingAllNo(appId, {
+        onLog: (line) => logEvent(uploadId, "info", `[age-rating] ${line}`),
+      });
+    } catch (err) {
+      await logEvent(
+        uploadId,
+        "error",
+        `Content rating auto-answer failed: ${(err as Error).message}. Complete the questionnaire manually in the console.`,
+      );
+    }
+  }
+
+  // 7) Optionally submit for review.
   if (autoSubmit) {
     await logEvent(uploadId, "info", "Submitting app for review");
     await submitForReview(appId, { onLog });
