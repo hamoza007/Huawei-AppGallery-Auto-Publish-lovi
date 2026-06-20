@@ -244,6 +244,39 @@ export async function stepReadyForReview(uploadId: string) {
 
 // ---------------------- Step 6: Publish to Huawei ----------------------
 
+// Publish sub-step identifiers for UI tracking.
+const PUBLISH_STEPS = [
+  "publish:template",
+  "publish:metadata",
+  "publish:icon",
+  "publish:screenshots",
+  "publish:apk",
+  "publish:rating",
+  "publish:submit",
+] as const;
+
+type PublishStepId = (typeof PUBLISH_STEPS)[number];
+
+async function publishStep(
+  uploadId: string,
+  stepId: PublishStepId,
+  label: string,
+  progress: number,
+  fn: () => Promise<void>,
+): Promise<{ ok: boolean; error?: string }> {
+  await setStatus(uploadId, { status: "UPLOADING_TO_HUAWEI", currentStep: stepId, progress });
+  await logEvent(uploadId, "info", `[step:${stepId}:start] ${label}`);
+  try {
+    await fn();
+    await logEvent(uploadId, "info", `[step:${stepId}:done] ${label} completed`);
+    return { ok: true };
+  } catch (err) {
+    const msg = (err as Error).message;
+    await logEvent(uploadId, "error", `[step:${stepId}:fail] ${label} failed: ${msg}`);
+    return { ok: false, error: msg };
+  }
+}
+
 export async function stepPublishToHuawei(uploadId: string) {
   const upload = await prisma.upload.findUniqueOrThrow({
     where: { id: uploadId },
@@ -252,116 +285,63 @@ export async function stepPublishToHuawei(uploadId: string) {
   if (!upload.huaweiApp) throw new Error("HuaweiApp not linked to upload");
   if (!upload.approvedAt) throw new Error("Upload not approved by user");
 
-  // Idempotency guard: once the app has been submitted, Huawei rejects any
-  // further metadata/icon/screenshot edits with error 204144649 ("the app
-  // current state can not allow modify"). Skip re-running on retries.
   if (upload.status === "SUBMITTED") {
     await logEvent(uploadId, "info", "App already submitted for review; skipping re-publish.");
     return;
   }
 
-  await setStatus(uploadId, { status: "UPLOADING_TO_HUAWEI", currentStep: "huawei-upload", progress: 88 });
+  await setStatus(uploadId, { status: "UPLOADING_TO_HUAWEI", currentStep: "publish:start", progress: 86 });
+  await logEvent(uploadId, "info", "Starting publish pipeline to Huawei AppGallery");
+
   const appId = upload.huaweiApp.agcAppId;
   const onLog = (line: string) => logEvent(uploadId, "info", `[fastlane] ${line}`);
-
   const isAab = /\.aab$/i.test(upload.filename) || /\.aab$/i.test(upload.apkPath);
   const assetDir = uploadAssetDir(uploadId);
-
-  // 1) Push localized metadata via the plugin's update_app_localization action.
-  //    We materialize the fastlane/metadata/huawei/<locale>/ folder structure
-  //    it expects, then point the lane at it.
-  if (upload.localizations.length > 0) {
-    await logEvent(uploadId, "info", `Writing localized metadata (${upload.localizations.length} locales)`);
-    const metadataPath = await writeFastlaneMetadata(assetDir, upload.localizations);
-    await logEvent(uploadId, "info", "Pushing localized metadata via update_app_localization");
-    await updateLocalization(appId, metadataPath, { onLog });
-    await prisma.localization.updateMany({
-      where: { uploadId },
-      data: { uploadedToHuaweiAt: new Date() },
-    });
-  }
-
-  // 2) Upload the APK/AAB via the plugin's main action. We always upload
-  //    WITHOUT submitting here, so the fixed app-info template (step 3) is
-  //    applied before any review submission.
-  const defaultLoc =
-    upload.localizations.find((l) => l.locale === DEFAULT_LOCALE) ?? upload.localizations[0];
-  const changelogPath = await writeChangelog(assetDir, defaultLoc?.whatsNew);
   const template = await resolveAppTemplate();
-  const privacyPolicyUrl = template.privacyPolicy || process.env.PRIVACY_POLICY_URL || undefined;
-
-  // Auto-submit is driven by the template flag (preferred) or env var fallback.
   const autoSubmit = template.autoSubmitForReview ?? /^(1|true|yes)$/i.test(process.env.AUTO_SUBMIT_FOR_REVIEW ?? "");
+  const failures: { step: string; error: string }[] = [];
 
-  await logEvent(
-    uploadId,
-    "info",
-    `Uploading ${isAab ? "AAB" : "APK"} to AppGallery (app_id ${appId}) (no auto-submit)`,
-  );
-  await publishApk(
-    {
-      appId,
-      apkPath: upload.apkPath,
-      isAab,
-      submitForReview: false,
-      privacyPolicyUrl,
-      changelogPath: changelogPath ?? undefined,
-    },
-    { onLog },
-  );
-
-  // 3) Apply the fixed app-info template (category, content/age rating, privacy
-  //    policy, distribution countries, support contacts) via the Connect API.
-  //    The Fastlane plugin does not cover these fields. This keeps every
-  //    release consistent and is also required for submit ("Dist country").
+  // 1) Apply app-info template FIRST (countries, category, device types).
+  //    Huawei requires publishCountry before APK upload (error 204144694).
   if (!templateIsEmpty(template)) {
-    await logEvent(uploadId, "info", "Applying fixed app-info template (category/rating/countries/policy)");
-    try {
+    const r = await publishStep(uploadId, "publish:template", "Apply app-info template (countries/category)", 87, async () => {
       await applyAppInfoTemplate(appId, template, {
         onLog: (line) => logEvent(uploadId, "info", `[app-info] ${line}`),
       });
-    } catch (err) {
-      // Don't fail the whole upload if the template can't be applied (e.g. the
-      // age-rating IARC questionnaire is console-only on this account). The
-      // binary + metadata are already uploaded; surface the issue and let the
-      // user finish in the console.
-      await logEvent(
-        uploadId,
-        "error",
-        `Could not fully apply app-info template: ${(err as Error).message}. Finish remaining fields in the console.`,
-      );
-    }
+    });
+    if (!r.ok) failures.push({ step: "App-info template", error: r.error! });
   } else {
-    await logEvent(
-      uploadId,
-      "info",
-      "No app-info template configured; set category/rating/countries/policy on the Settings page to automate them.",
-    );
+    await logEvent(uploadId, "info", "[step:publish:template:skip] No app-info template configured");
   }
 
-  // 4) Upload the app icon — required before submit-for-review.
-  //    Huawei returns error 204144660 ("AppIcon is necessary!") without this.
+  // 2) Push localized metadata.
+  if (upload.localizations.length > 0) {
+    const r = await publishStep(uploadId, "publish:metadata", "Push localized metadata", 89, async () => {
+      const metadataPath = await writeFastlaneMetadata(assetDir, upload.localizations);
+      await updateLocalization(appId, metadataPath, { onLog });
+      await prisma.localization.updateMany({
+        where: { uploadId },
+        data: { uploadedToHuaweiAt: new Date() },
+      });
+    });
+    if (!r.ok) failures.push({ step: "Localized metadata", error: r.error! });
+  }
+
+  // 3) Upload app icon.
   if (upload.iconPath) {
-    await logEvent(uploadId, "info", "Uploading app icon to Huawei");
-    try {
-      await uploadAppIcon(appId, upload.iconPath, "en-US", {
+    const r = await publishStep(uploadId, "publish:icon", "Upload app icon", 91, async () => {
+      await uploadAppIcon(appId, upload.iconPath!, "en-US", {
         onLog: (line) => logEvent(uploadId, "info", `[icon] ${line}`),
       });
-    } catch (err) {
-      await logEvent(
-        uploadId,
-        "error",
-        `Icon upload failed: ${(err as Error).message}. Submit may fail with "AppIcon is necessary".`,
-      );
-    }
+    });
+    if (!r.ok) failures.push({ step: "App icon", error: r.error! });
   } else {
-    await logEvent(uploadId, "warn", "No icon extracted from APK; submit may fail with AppIcon error");
+    await logEvent(uploadId, "warn", "[step:publish:icon:skip] No icon extracted from APK");
   }
 
-  // 5) Upload screenshots — Huawei requires at least 3.
+  // 4) Upload screenshots.
   if (upload.screenshots && upload.screenshots.length >= 3) {
-    await logEvent(uploadId, "info", `Uploading ${upload.screenshots.length} screenshots to Huawei`);
-    try {
+    const r = await publishStep(uploadId, "publish:screenshots", `Upload ${upload.screenshots.length} screenshots`, 93, async () => {
       const screenshotPaths = upload.screenshots
         .sort((a, b) => a.ordering - b.ordering)
         .map((s) => s.path);
@@ -372,50 +352,73 @@ export async function stepPublishToHuawei(uploadId: string) {
         where: { uploadId },
         data: { uploadedToHuaweiAt: new Date() },
       });
-    } catch (err) {
-      await logEvent(
-        uploadId,
-        "error",
-        `Screenshot upload failed: ${(err as Error).message}. Submit may fail with "ScreenShots is necessary".`,
-      );
-    }
+    });
+    if (!r.ok) failures.push({ step: "Screenshots", error: r.error! });
   } else {
-    await logEvent(
-      uploadId,
-      "warn",
-      `Only ${upload.screenshots?.length ?? 0} screenshots available (need at least 3). Submit may fail.`,
-    );
+    await logEvent(uploadId, "warn", `[step:publish:screenshots:skip] Only ${upload.screenshots?.length ?? 0} screenshots (need 3+)`);
   }
 
-  // 6) Auto-answer the content rating questionnaire (all "No") if configured.
+  // 5) Upload APK/AAB (now that countries + assets are set).
+  const defaultLoc =
+    upload.localizations.find((l) => l.locale === DEFAULT_LOCALE) ?? upload.localizations[0];
+  const changelogPath = await writeChangelog(assetDir, defaultLoc?.whatsNew);
+  const privacyPolicyUrl = template.privacyPolicy || process.env.PRIVACY_POLICY_URL || undefined;
+
+  {
+    const r = await publishStep(uploadId, "publish:apk", `Upload ${isAab ? "AAB" : "APK"} to AppGallery`, 95, async () => {
+      await publishApk(
+        {
+          appId,
+          apkPath: upload.apkPath,
+          isAab,
+          submitForReview: false,
+          privacyPolicyUrl,
+          changelogPath: changelogPath ?? undefined,
+        },
+        { onLog },
+      );
+    });
+    if (!r.ok) {
+      // APK upload is critical — cannot continue without it.
+      failures.push({ step: "APK upload", error: r.error! });
+      const summary = failures.map((f) => `${f.step}: ${f.error}`).join("; ");
+      throw new Error(`Publish failed at APK upload. Failures: ${summary}`);
+    }
+  }
+
+  // 6) Auto-answer content rating questionnaire.
   if (template.autoContentRating) {
-    await logEvent(uploadId, "info", "Auto-answering content rating questionnaire (all No)");
-    try {
+    const r = await publishStep(uploadId, "publish:rating", "Auto-answer content rating (all No)", 97, async () => {
       await submitAgeRatingAllNo(appId, {
         onLog: (line) => logEvent(uploadId, "info", `[age-rating] ${line}`),
       });
-    } catch (err) {
-      await logEvent(
-        uploadId,
-        "error",
-        `Content rating auto-answer failed: ${(err as Error).message}. Complete the questionnaire manually in the console.`,
-      );
-    }
+    });
+    if (!r.ok) failures.push({ step: "Content rating", error: r.error! });
   }
 
-  // 7) Optionally submit for review.
+  // 7) Submit for review (if enabled and no critical failures).
   if (autoSubmit) {
-    await logEvent(uploadId, "info", "Submitting app for review");
-    await submitForReview(appId, { onLog });
-    await setStatus(uploadId, { status: "SUBMITTED", currentStep: "submitted", progress: 100 });
-    await logEvent(uploadId, "info", "Successfully uploaded + submitted to Huawei AppGallery via Fastlane");
+    if (failures.length > 0) {
+      const summary = failures.map((f) => `${f.step}: ${f.error}`).join("; ");
+      await logEvent(uploadId, "warn", `Skipping auto-submit due to ${failures.length} failure(s): ${summary}`);
+      await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });
+      await logEvent(uploadId, "warn", "APK uploaded but some steps failed. Review errors above and retry or fix manually in the console.");
+    } else {
+      const r = await publishStep(uploadId, "publish:submit", "Submit for review", 99, async () => {
+        await submitForReview(appId, { onLog });
+      });
+      if (r.ok) {
+        await setStatus(uploadId, { status: "SUBMITTED", currentStep: "submitted", progress: 100 });
+        await logEvent(uploadId, "info", "Successfully uploaded + submitted to Huawei AppGallery");
+      } else {
+        failures.push({ step: "Submit for review", error: r.error! });
+        await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });
+        await logEvent(uploadId, "error", `Submit for review failed: ${r.error}. Submit manually in the console.`);
+      }
+    }
   } else {
     await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });
-    await logEvent(
-      uploadId,
-      "info",
-      "APK + metadata + fixed template uploaded. Review in the console and submit for review.",
-    );
+    await logEvent(uploadId, "info", "APK + metadata uploaded. Auto-submit is off; submit manually in the console.");
   }
 }
 

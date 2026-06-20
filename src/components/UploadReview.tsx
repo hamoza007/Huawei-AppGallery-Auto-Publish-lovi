@@ -14,10 +14,13 @@ type Localization = {
   whatsNew: string | null;
 };
 
+type UploadEvent = { id: string; level: string; message: string; createdAt: string };
+
 type UploadData = {
   id: string;
   filename: string;
   status: string;
+  currentStep?: string;
   progress: number;
   packageName: string | null;
   versionName: string | null;
@@ -27,7 +30,7 @@ type UploadData = {
   huaweiApp: { displayName: string; agcAppId: string } | null;
   localizations: Localization[];
   screenshots: Array<{ id: string; width: number; height: number; source: string }>;
-  events: Array<{ id: string; level: string; message: string; createdAt: string }>;
+  events: UploadEvent[];
 };
 
 const PENDING_STATUSES = new Set([
@@ -56,6 +59,7 @@ export function UploadReview({ upload: initial }: { upload: UploadData }) {
         setUpload({
           ...upload,
           status: json.upload.status,
+          currentStep: json.upload.currentStep,
           progress: json.upload.progress,
           packageName: json.upload.packageName,
           versionName: json.upload.versionName,
@@ -67,11 +71,15 @@ export function UploadReview({ upload: initial }: { upload: UploadData }) {
           events: json.upload.events,
         });
       }
-    }, 3000);
+    }, 2000);
     return () => clearInterval(id);
   }, [upload]);
 
   const active = upload.localizations.find((l) => l.locale === activeLocale);
+  const canPublish =
+    upload.status === "PENDING_REVIEW" ||
+    upload.status === "FAILED" ||
+    upload.status === "UPLOADED";
 
   type Check = { name: string; status: "pass" | "fail" | "warn"; detail: string };
   const [testResult, setTestResult] = useState<{ ready: boolean; summary: string; checks: Check[] } | null>(null);
@@ -115,9 +123,17 @@ export function UploadReview({ upload: initial }: { upload: UploadData }) {
   async function approve() {
     setBusy(true);
     const res = await fetch(`/api/uploads/${upload.id}/approve`, { method: "POST" });
+    if (res.ok) {
+      setUpload((prev) => ({
+        ...prev,
+        status: "UPLOADING_TO_HUAWEI",
+        currentStep: "publish:start",
+        errorMessage: null,
+      }));
+    } else {
+      alert(`Publish failed: ${await res.text()}`);
+    }
     setBusy(false);
-    if (res.ok) router.refresh();
-    else alert(`Approve failed: ${await res.text()}`);
   }
 
   async function reject() {
@@ -226,20 +242,26 @@ export function UploadReview({ upload: initial }: { upload: UploadData }) {
           <div className="card">
             <h3 className="mb-2 font-semibold">Actions</h3>
             <div className="flex flex-col gap-2">
-              <button
-                disabled={busy || upload.status !== "PENDING_REVIEW"}
-                onClick={approve}
-                className="btn btn-primary disabled:opacity-50"
-              >
-                {t("review.approveButton")}
-              </button>
-              <button
-                disabled={busy || upload.status !== "PENDING_REVIEW"}
-                onClick={reject}
-                className="btn btn-danger disabled:opacity-50"
-              >
-                {t("review.rejectButton")}
-              </button>
+              {canPublish && (
+                <button
+                  disabled={busy}
+                  onClick={approve}
+                  className="btn btn-primary disabled:opacity-50"
+                >
+                  {upload.status === "FAILED" || upload.status === "UPLOADED"
+                    ? "Retry Publish"
+                    : t("review.approveButton")}
+                </button>
+              )}
+              {upload.status === "PENDING_REVIEW" && (
+                <button
+                  disabled={busy}
+                  onClick={reject}
+                  className="btn btn-danger disabled:opacity-50"
+                >
+                  {t("review.rejectButton")}
+                </button>
+              )}
               <button
                 disabled={testing}
                 onClick={runPublishTest}
@@ -281,6 +303,8 @@ export function UploadReview({ upload: initial }: { upload: UploadData }) {
               </div>
             )}
           </div>
+
+          <PublishStepsPanel upload={upload} />
 
           <div className="card">
             <h3 className="mb-2 font-semibold">Activity</h3>
@@ -391,4 +415,89 @@ function LocalizationEditor({
       </button>
     </div>
   );
+}
+
+// Publish sub-step definitions for the progress panel.
+const PUBLISH_STEP_DEFS: { id: string; label: string }[] = [
+  { id: "publish:template", label: "Countries / Category / Template" },
+  { id: "publish:metadata", label: "Localized metadata" },
+  { id: "publish:icon", label: "App icon" },
+  { id: "publish:screenshots", label: "Screenshots" },
+  { id: "publish:apk", label: "Upload APK" },
+  { id: "publish:rating", label: "Content rating" },
+  { id: "publish:submit", label: "Submit for review" },
+];
+
+function deriveStepStatus(
+  stepId: string,
+  currentStep: string | undefined,
+  events: UploadEvent[],
+  uploadStatus: string,
+): "pending" | "running" | "done" | "failed" | "skipped" {
+  const doneMsg = events.find((e) => e.message.includes(`[step:${stepId}:done]`));
+  if (doneMsg) return "done";
+  const failMsg = events.find((e) => e.message.includes(`[step:${stepId}:fail]`));
+  if (failMsg) return "failed";
+  const skipMsg = events.find((e) => e.message.includes(`[step:${stepId}:skip]`));
+  if (skipMsg) return "skipped";
+  if (currentStep === stepId && uploadStatus === "UPLOADING_TO_HUAWEI") return "running";
+  return "pending";
+}
+
+function PublishStepsPanel({ upload }: { upload: UploadData }) {
+  const isPublishing = upload.status === "UPLOADING_TO_HUAWEI";
+  const hasPublished =
+    upload.status === "SUBMITTED" ||
+    upload.status === "UPLOADED" ||
+    upload.status === "FAILED";
+  const hasStepEvents = upload.events.some((e) => e.message.includes("[step:publish:"));
+
+  if (!isPublishing && !hasPublished) return null;
+  if (!isPublishing && !hasStepEvents) return null;
+
+  return (
+    <div className="card">
+      <h3 className="mb-2 font-semibold">
+        {isPublishing ? "Publishing…" : upload.status === "SUBMITTED" ? "Published" : "Publish Result"}
+      </h3>
+      <ul className="space-y-1.5 text-sm">
+        {PUBLISH_STEP_DEFS.map((def) => {
+          const status = deriveStepStatus(def.id, upload.currentStep, upload.events, upload.status);
+          return (
+            <li key={def.id} className="flex items-center gap-2">
+              <StepIcon status={status} />
+              <span className={status === "running" ? "font-medium" : status === "failed" ? "text-red-700" : ""}>
+                {def.label}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      {upload.status === "SUBMITTED" && (
+        <p className="mt-3 rounded bg-green-50 px-2 py-1 text-sm text-green-800">
+          App submitted for review successfully.
+        </p>
+      )}
+      {upload.status === "FAILED" && upload.errorMessage && (
+        <p className="mt-3 rounded bg-red-50 px-2 py-1 text-sm text-red-800">
+          {upload.errorMessage}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function StepIcon({ status }: { status: "pending" | "running" | "done" | "failed" | "skipped" }) {
+  switch (status) {
+    case "done":
+      return <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-green-100 text-xs text-green-700">&#10003;</span>;
+    case "failed":
+      return <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-red-100 text-xs text-red-700">&#10007;</span>;
+    case "running":
+      return <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-blue-100 text-xs text-blue-700 animate-pulse">&#8226;</span>;
+    case "skipped":
+      return <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-neutral-100 text-xs text-neutral-400">&#8211;</span>;
+    default:
+      return <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-neutral-100 text-xs text-neutral-400">&#8226;</span>;
+  }
 }

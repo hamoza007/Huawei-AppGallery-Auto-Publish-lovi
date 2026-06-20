@@ -11,7 +11,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       huaweiApp: true,
       localizations: { orderBy: { locale: "asc" } },
       screenshots: { orderBy: { ordering: "asc" } },
-      events: { orderBy: { createdAt: "desc" }, take: 50 },
+      events: { orderBy: { createdAt: "desc" }, take: 100 },
       jobs: { orderBy: { createdAt: "desc" }, take: 50 },
     },
   });
