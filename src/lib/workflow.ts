@@ -396,25 +396,23 @@ export async function stepPublishToHuawei(uploadId: string) {
     if (!r.ok) failures.push({ step: "Content rating", error: r.error! });
   }
 
-  // 7) Submit for review (if enabled and no critical failures).
+  // 7) Submit for review (if enabled). Non-critical failures (template, content rating)
+  // should NOT block submission — the APK upload is the only hard gate (already throws above).
   if (autoSubmit) {
     if (failures.length > 0) {
       const summary = failures.map((f) => `${f.step}: ${f.error}`).join("; ");
-      await logEvent(uploadId, "warn", `Skipping auto-submit due to ${failures.length} failure(s): ${summary}`);
-      await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });
-      await logEvent(uploadId, "warn", "APK uploaded but some steps failed. Review errors above and retry or fix manually in the console.");
+      await logEvent(uploadId, "warn", `Non-critical step(s) failed: ${summary}. Proceeding with submission anyway.`);
+    }
+    const r = await publishStep(uploadId, "publish:submit", "Submit for review", 99, async () => {
+      await submitForReview(appId, { onLog });
+    });
+    if (r.ok) {
+      await setStatus(uploadId, { status: "SUBMITTED", currentStep: "submitted", progress: 100 });
+      await logEvent(uploadId, "info", "Successfully uploaded + submitted to Huawei AppGallery");
     } else {
-      const r = await publishStep(uploadId, "publish:submit", "Submit for review", 99, async () => {
-        await submitForReview(appId, { onLog });
-      });
-      if (r.ok) {
-        await setStatus(uploadId, { status: "SUBMITTED", currentStep: "submitted", progress: 100 });
-        await logEvent(uploadId, "info", "Successfully uploaded + submitted to Huawei AppGallery");
-      } else {
-        failures.push({ step: "Submit for review", error: r.error! });
-        await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });
-        await logEvent(uploadId, "error", `Submit for review failed: ${r.error}. Submit manually in the console.`);
-      }
+      failures.push({ step: "Submit for review", error: r.error! });
+      await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });
+      await logEvent(uploadId, "error", `Submit for review failed: ${r.error}. Submit manually in the console.`);
     }
   } else {
     await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });
