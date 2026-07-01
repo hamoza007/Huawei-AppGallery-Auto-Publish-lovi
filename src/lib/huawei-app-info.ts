@@ -31,6 +31,22 @@ export interface AppInfoTemplate {
   // Comma-separated ISO country/region codes (no "ALL" token).
   publishCountry?: string;
   privacyPolicy?: string;
+  // Device compatibility: 4 = Mobile Phone, 6 = Tablet (comma-separated IDs).
+  deviceTypes?: string;
+  // Payment: true = free app.
+  isFree?: boolean;
+  // Privacy declarations.
+  collectPersonalData?: boolean;
+  // AI function declaration: true = "Not involved".
+  genAiNotInvolved?: boolean;
+  // Release timing: true = "Immediately once approved".
+  releaseImmediately?: boolean;
+  // Auto-submit for review after upload.
+  autoSubmitForReview?: boolean;
+  // Auto-answer content-rating questionnaire with all "No".
+  autoContentRating?: boolean;
+  // Casual game sub-tag (relevant when category is Games).
+  isGameCasual?: boolean;
 }
 
 type RetEnvelope = { ret?: { code?: number; msg?: string } };
@@ -80,6 +96,9 @@ function buildPayload(t: AppInfoTemplate): Record<string, unknown> {
   const pc = sanitizeCountries(t.publishCountry);
   if (pc) p.publishCountry = pc;
   if (t.privacyPolicy) p.privacyPolicy = t.privacyPolicy;
+  // deviceTypes is set at app creation; sending it in updateAppInfo causes
+  // "deviceTypes can not be chosen all" errors — omit from payload.
+  if (typeof t.isFree === "boolean") p.isFree = t.isFree ? 1 : 0;
   return p;
 }
 
@@ -94,6 +113,8 @@ export interface RawAppInfo {
   grandChildType?: number;
   publishCountry?: string;
   privacyPolicy?: string;
+  deviceTypes?: number[];
+  isFree?: number;
   [k: string]: unknown;
 }
 
@@ -129,6 +150,8 @@ export function templateFromAppInfo(info: RawAppInfo): AppInfoTemplate {
     grandChildType: typeof info.grandChildType === "number" ? info.grandChildType : undefined,
     publishCountry: sanitizeCountries(info.publishCountry),
     privacyPolicy: info.privacyPolicy || undefined,
+    deviceTypes: Array.isArray(info.deviceTypes) ? info.deviceTypes.join(",") : undefined,
+    isFree: typeof info.isFree === "number" ? info.isFree === 1 : undefined,
   };
 }
 
@@ -387,4 +410,103 @@ export async function uploadScreenshots(
     throw new Error(`Failed to register screenshots (code ${code}): ${fileInfoBody.ret?.msg ?? fileInfoText}`);
   }
   await opts.onLog?.(`${uploadedFiles.length} screenshots registered successfully`);
+}
+
+// ---------------------- Content Rating (IARC questionnaire) ----------------------
+
+// The Huawei Connect Publishing API exposes two age-rating endpoints:
+//   GET  /api/publish/v2/age-rating/questionnaire?appId=X  -> get questions
+//   POST /api/publish/v2/age-rating/submit?appId=X         -> submit answers
+//
+// The questionnaire has 11 categories. Each category has one or more questions.
+// For "answer all No" we fetch the questions, map every answer to the "No"
+// option, and submit.
+
+interface AgeRatingQuestion {
+  questionId: string;
+  options: { optionId: string; optionName: string }[];
+}
+
+interface AgeRatingCategory {
+  categoryId: string;
+  categoryName: string;
+  questions: AgeRatingQuestion[];
+}
+
+interface AgeRatingQuestionnaire {
+  categories: AgeRatingCategory[];
+  templateId?: string;
+}
+
+export async function fetchAgeRatingQuestionnaire(
+  appId: string,
+  opts: ApplyOptions = {},
+): Promise<AgeRatingQuestionnaire> {
+  const creds = opts.creds ?? huaweiCredsFromEnv();
+  const token = await getConnectToken(creds);
+  const url = `${CONNECT_BASE}/publish/v2/age-rating/questionnaire?appId=${encodeURIComponent(appId)}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}`, client_id: creds.clientId },
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`age-rating questionnaire fetch failed (HTTP ${res.status}): ${text}`);
+  const body = JSON.parse(text) as RetEnvelope & AgeRatingQuestionnaire;
+  if ((body.ret?.code ?? 0) !== 0) {
+    throw new Error(`age-rating questionnaire failed (code ${body.ret?.code}): ${body.ret?.msg ?? text}`);
+  }
+  return body;
+}
+
+export async function submitAgeRatingAllNo(
+  appId: string,
+  opts: ApplyOptions = {},
+): Promise<void> {
+  await opts.onLog?.("Fetching age-rating questionnaire");
+  const questionnaire = await fetchAgeRatingQuestionnaire(appId, opts);
+
+  const answers: { questionId: string; optionId: string }[] = [];
+  for (const cat of questionnaire.categories ?? []) {
+    for (const q of cat.questions ?? []) {
+      const noOpt = q.options.find(
+        (o) => o.optionName.toLowerCase() === "no",
+      );
+      if (noOpt) {
+        answers.push({ questionId: q.questionId, optionId: noOpt.optionId });
+      } else if (q.options.length > 0) {
+        answers.push({ questionId: q.questionId, optionId: q.options[q.options.length - 1].optionId });
+      }
+    }
+  }
+
+  await opts.onLog?.(`Submitting ${answers.length} answers (all "No")`);
+  const creds = opts.creds ?? huaweiCredsFromEnv();
+  const token = await getConnectToken(creds);
+  const url = `${CONNECT_BASE}/publish/v2/age-rating/submit?appId=${encodeURIComponent(appId)}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      client_id: creds.clientId,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      templateId: questionnaire.templateId,
+      answers,
+    }),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`age-rating submit failed (HTTP ${res.status}): ${text}`);
+  }
+  let body: RetEnvelope = {};
+  try {
+    body = JSON.parse(text) as RetEnvelope;
+  } catch {
+    // Non-JSON 2xx is success
+  }
+  const code = body.ret?.code ?? 0;
+  if (code !== 0) {
+    throw new Error(`age-rating submit failed (code ${code}): ${body.ret?.msg ?? text}`);
+  }
+  await opts.onLog?.("Content rating (all No) submitted successfully");
 }

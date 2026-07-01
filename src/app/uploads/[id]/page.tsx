@@ -16,7 +16,7 @@ export default async function UploadDetailPage({
       huaweiApp: true,
       localizations: { orderBy: { locale: "asc" } },
       screenshots: { orderBy: { ordering: "asc" } },
-      events: { orderBy: { createdAt: "desc" }, take: 50 },
+      events: { orderBy: { createdAt: "desc" }, take: 100 },
     },
   });
   if (!upload) notFound();
@@ -25,6 +25,7 @@ export default async function UploadDetailPage({
     id: upload.id,
     filename: upload.filename,
     status: upload.status,
+    currentStep: upload.currentStep ?? undefined,
     progress: upload.progress,
     packageName: upload.packageName,
     versionName: upload.versionName,

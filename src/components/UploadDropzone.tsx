@@ -15,16 +15,19 @@ const SCREENSHOT_SOURCES: Array<{ value: string; label: string; hint: string }> 
   { value: "template", label: "Template (icon + tagline)", hint: "Fast deterministic mockups using the app icon and generated taglines." },
 ];
 
+const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB per chunk
+const MAX_CONCURRENT = 4; // parallel chunk uploads
+
 export function UploadDropzone({ apps }: { apps: AppOption[] }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
-  // "" = auto-detect from APK (APK-only flow)
   const [selectedAppId, setSelectedAppId] = useState("");
   const [screenshotSource, setScreenshotSource] = useState("vmos");
   const [metadataPrompt, setMetadataPrompt] = useState("");
   const [screenshotPrompt, setScreenshotPrompt] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [uploadPhase, setUploadPhase] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   async function handleFile(file: File) {
@@ -32,6 +35,106 @@ export function UploadDropzone({ apps }: { apps: AppOption[] }) {
     setIsUploading(true);
     setProgress(0);
 
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+    // For small files (< 10 MB), use the simple single-request upload
+    if (totalChunks <= 2) {
+      return handleSimpleUpload(file);
+    }
+
+    try {
+      // Phase 1: Init chunked session
+      setUploadPhase("Initializing…");
+      const initRes = await fetch("/api/uploads/chunked", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: file.name,
+          totalSize: file.size,
+          totalChunks,
+          huaweiAppId: selectedAppId || undefined,
+          screenshotSource,
+          metadataPrompt: metadataPrompt.trim() || undefined,
+          screenshotPrompt: screenshotPrompt.trim() || undefined,
+        }),
+      });
+      if (!initRes.ok) {
+        const t = await initRes.text();
+        throw new Error(`Init failed: ${t}`);
+      }
+      const { sessionId } = await initRes.json();
+
+      // Phase 2: Upload chunks in parallel
+      setUploadPhase("Uploading…");
+      const chunksDone = new Array(totalChunks).fill(false);
+      let nextChunk = 0;
+
+      const updateProgress = () => {
+        const done = chunksDone.filter(Boolean).length;
+        setProgress(Math.round((done / totalChunks) * 95)); // reserve 5% for assembly
+      };
+
+      const uploadChunk = async (index: number): Promise<void> => {
+        const start = index * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const blob = file.slice(start, end);
+
+        const form = new FormData();
+        form.append("chunk", blob, `chunk_${index}`);
+        form.append("index", String(index));
+
+        const maxRetries = 3;
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+          const res = await fetch(`/api/uploads/chunked/${sessionId}`, {
+            method: "POST",
+            body: form,
+          });
+          if (res.ok) {
+            chunksDone[index] = true;
+            updateProgress();
+            return;
+          }
+          if (attempt === maxRetries - 1) {
+            const t = await res.text();
+            throw new Error(`Chunk ${index} failed after ${maxRetries} retries: ${t}`);
+          }
+          // Wait before retry with exponential backoff
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        }
+      };
+
+      // Worker pool: N concurrent uploaders
+      const workers = Array.from({ length: Math.min(MAX_CONCURRENT, totalChunks) }, async () => {
+        while (true) {
+          const idx = nextChunk++;
+          if (idx >= totalChunks) break;
+          await uploadChunk(idx);
+        }
+      });
+      await Promise.all(workers);
+
+      // Phase 3: Assemble on server
+      setUploadPhase("Assembling…");
+      setProgress(97);
+      const completeRes = await fetch(`/api/uploads/chunked/${sessionId}/complete`, {
+        method: "POST",
+      });
+      if (!completeRes.ok) {
+        const t = await completeRes.text();
+        throw new Error(`Assembly failed: ${t}`);
+      }
+      const { id } = await completeRes.json();
+      setProgress(100);
+      setIsUploading(false);
+      router.push(`/uploads/${id}`);
+    } catch (err) {
+      setIsUploading(false);
+      setUploadPhase("");
+      setError(`Upload failed: ${(err as Error).message}`);
+    }
+  }
+
+  async function handleSimpleUpload(file: File) {
     const form = new FormData();
     form.append("file", file);
     if (selectedAppId) form.append("huaweiAppId", selectedAppId);
@@ -39,6 +142,7 @@ export function UploadDropzone({ apps }: { apps: AppOption[] }) {
     if (metadataPrompt.trim()) form.append("metadataPrompt", metadataPrompt.trim());
     if (screenshotPrompt.trim()) form.append("screenshotPrompt", screenshotPrompt.trim());
 
+    setUploadPhase("Uploading…");
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/uploads");
     xhr.upload.onprogress = (e) => {
@@ -46,6 +150,7 @@ export function UploadDropzone({ apps }: { apps: AppOption[] }) {
     };
     xhr.onload = () => {
       setIsUploading(false);
+      setUploadPhase("");
       if (xhr.status >= 200 && xhr.status < 300) {
         const { id } = JSON.parse(xhr.responseText);
         router.push(`/uploads/${id}`);
@@ -55,6 +160,7 @@ export function UploadDropzone({ apps }: { apps: AppOption[] }) {
     };
     xhr.onerror = () => {
       setIsUploading(false);
+      setUploadPhase("");
       setError("Network error");
     };
     xhr.send(form);
@@ -156,9 +262,9 @@ export function UploadDropzone({ apps }: { apps: AppOption[] }) {
       {isUploading && (
         <div>
           <div className="h-2 rounded-full bg-neutral-100">
-            <div className="h-2 rounded-full bg-brand" style={{ width: `${progress}%` }} />
+            <div className="h-2 rounded-full bg-brand transition-all duration-300" style={{ width: `${progress}%` }} />
           </div>
-          <p className="mt-1 text-xs text-neutral-500">Uploading… {progress}%</p>
+          <p className="mt-1 text-xs text-neutral-500">{uploadPhase || "Uploading…"} {progress}%</p>
         </div>
       )}
 
