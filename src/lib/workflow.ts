@@ -11,6 +11,11 @@ import { resolveAppId, publishApk, updateLocalization, submitForReview } from ".
 import { writeFastlaneMetadata, writeChangelog } from "./fastlane-metadata";
 import { applyAppInfoTemplate, templateIsEmpty } from "./huawei-app-info";
 import { resolveAppTemplate } from "./app-template";
+import {
+  huaweiConsoleAutomationEnabled,
+  requireConsoleBeforeAutoSubmit,
+  runHuaweiConsoleRequiredFields,
+} from "./huawei-console-automation";
 import type { Upload } from "@prisma/client";
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads");
@@ -148,7 +153,7 @@ export async function stepTranslate(uploadId: string) {
 
   for (const target of TARGET_LOCALES) {
     if (target.bcp47 === DEFAULT_LOCALE) continue;
-    await logEvent(uploadId, "info", `Translating → ${target.bcp47}`);
+    await logEvent(uploadId, "info", `Translating ? ${target.bcp47}`);
     try {
       const translated = await translateMetadata(
         {
@@ -332,8 +337,47 @@ export async function stepPublishToHuawei(uploadId: string) {
     );
   }
 
-  // 4) Optionally submit for review (off by default).
+  // 4) Complete console-only fields (category/countries on first versions,
+  //    content rating, personal data, AI declaration, release timing) when a
+  //    logged-in Chrome CDP session is available.
+  let consoleAutomationCompleted = false;
+  if (huaweiConsoleAutomationEnabled()) {
+    await logEvent(uploadId, "info", "Running Huawei Console automation for required review fields");
+    try {
+      await runHuaweiConsoleRequiredFields({
+        appId,
+        packageName: upload.packageName,
+        versionName: upload.versionName,
+        template,
+        onLog: (line) => logEvent(uploadId, "info", `[huawei-console] ${line}`),
+      });
+      consoleAutomationCompleted = true;
+    } catch (err) {
+      await logEvent(
+        uploadId,
+        "error",
+        `Huawei Console automation failed: ${(err as Error).message}. Finish console-only fields manually before submit.`,
+      );
+    }
+  } else {
+    await logEvent(
+      uploadId,
+      "warn",
+      "Huawei Console automation is disabled. Set HUAWEI_CONSOLE_AUTOMATION=1 with a logged-in Chrome CDP session to automate content rating, personal data, AI declaration, and first-version category/countries.",
+    );
+  }
+
+  // 5) Optionally submit for review (off by default).
   if (autoSubmit) {
+    if (requireConsoleBeforeAutoSubmit() && !consoleAutomationCompleted) {
+      await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });
+      await logEvent(
+        uploadId,
+        "warn",
+        "Auto-submit paused because Huawei Console automation did not complete required review fields.",
+      );
+      return;
+    }
     await logEvent(uploadId, "info", "Submitting app for review");
     await submitForReview(appId, { onLog });
     await setStatus(uploadId, { status: "SUBMITTED", currentStep: "submitted", progress: 100 });

@@ -12,7 +12,8 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
-    "worker": "tsx src/worker/index.ts"
+    "worker": "tsx src/worker/index.ts",
+    "huawei:console": "tsx scripts/content-rating-browser.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
@@ -23,6 +24,7 @@
     "next": "^15.5.18",
     "next-intl": "^3.25.0",
     "openai": "^4.73.0",
+    "playwright-core": "^1.51.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "sharp": "^0.33.5",
