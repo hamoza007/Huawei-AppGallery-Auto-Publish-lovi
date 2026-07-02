@@ -291,29 +291,12 @@ export async function stepPublishToHuawei(uploadId: string) {
   // template is applied; default is to stop at UPLOADED so the user submits.
   const autoSubmit = /^(1|true|yes)$/i.test(process.env.AUTO_SUBMIT_FOR_REVIEW ?? "");
 
-  await logEvent(
-    uploadId,
-    "info",
-    `Uploading ${isAab ? "AAB" : "APK"} to AppGallery (app_id ${appId}) (no auto-submit)`,
-  );
-  await publishApk(
-    {
-      appId,
-      apkPath: upload.apkPath,
-      isAab,
-      submitForReview: false,
-      privacyPolicyUrl,
-      changelogPath: changelogPath ?? undefined,
-    },
-    { onLog },
-  );
-
-  // 3) Apply the fixed app-info template (category, content/age rating, privacy
-  //    policy, distribution countries, support contacts) via the Connect API.
+  // 3) Apply the fixed app-info template before APK upload. Huawei needs the
+  //    distribution country list to exist before it can issue an APK upload URL.
   //    The Fastlane plugin does not cover these fields. This keeps every
   //    release consistent and is also required for submit ("Dist country").
   if (!templateIsEmpty(template)) {
-    await logEvent(uploadId, "info", "Applying fixed app-info template (category/rating/countries/policy)");
+    await logEvent(uploadId, "info", "Applying fixed app-info template before APK upload");
     try {
       await applyAppInfoTemplate(appId, template, {
         onLog: (line) => logEvent(uploadId, "info", `[app-info] ${line}`),
@@ -336,6 +319,23 @@ export async function stepPublishToHuawei(uploadId: string) {
       "No app-info template configured; set category/rating/countries/policy on the Settings page to automate them.",
     );
   }
+
+  await logEvent(
+    uploadId,
+    "info",
+    `Uploading ${isAab ? "AAB" : "APK"} to AppGallery (app_id ${appId}) (no auto-submit)`,
+  );
+  await publishApk(
+    {
+      appId,
+      apkPath: upload.apkPath,
+      isAab,
+      submitForReview: false,
+      privacyPolicyUrl,
+      changelogPath: changelogPath ?? undefined,
+    },
+    { onLog },
+  );
 
   // 4) Complete console-only fields (category/countries on first versions,
   //    content rating, personal data, AI declaration, release timing) when a
