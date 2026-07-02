@@ -11,6 +11,7 @@ import {
 } from "./huawei-app-info";
 
 export const APP_TEMPLATE_KEY = "huawei.appTemplate";
+const DEFAULT_PRIVACY_POLICY_URL = "https://sites.google.com/view/makeuphanane";
 
 function numOrUndef(v: string | undefined): number | undefined {
   if (!v) return undefined;
@@ -25,7 +26,7 @@ function fromEnv(): AppInfoTemplate {
     childType: numOrUndef(process.env.HUAWEI_TPL_CHILD_TYPE),
     grandChildType: numOrUndef(process.env.HUAWEI_TPL_GRANDCHILD_TYPE),
     publishCountry: process.env.HUAWEI_TPL_PUBLISH_COUNTRY || undefined,
-    privacyPolicy: process.env.HUAWEI_TPL_PRIVACY_POLICY || process.env.PRIVACY_POLICY_URL || undefined,
+    privacyPolicy: process.env.HUAWEI_TPL_PRIVACY_POLICY || process.env.PRIVACY_POLICY_URL || DEFAULT_PRIVACY_POLICY_URL,
   };
 }
 

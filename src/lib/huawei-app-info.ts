@@ -17,6 +17,8 @@
 //  - contentRate / age rating come from the console IARC questionnaire and are
 //    NOT writable here, so they are intentionally omitted.
 import { huaweiCredsFromEnv, type FastlaneCredentials } from "./fastlane";
+import { promises as fs } from "fs";
+import path from "path";
 
 const CONNECT_BASE = "https://connect-api.cloud.huawei.com/api";
 
@@ -32,6 +34,18 @@ export interface AppInfoTemplate {
 }
 
 type RetEnvelope = { ret?: { code?: number; msg?: string } };
+type UploadUrlInfo = {
+  objectId?: string;
+  url?: string;
+  method?: string;
+  headers?: Record<string, string>;
+  // Older responses used these top-level signing fields.
+  authCode?: string;
+  userAgent?: string;
+  host?: string;
+  date?: string;
+  contentHash?: string;
+};
 
 // Keep only valid 2-letter ISO codes; drop Huawei's synthetic "ALL" token,
 // blanks and duplicates while preserving order.
@@ -177,4 +191,147 @@ export async function applyAppInfoTemplate(
     throw new Error(`app-info update failed (code ${code}): ${body.ret?.msg ?? text}`);
   }
   await opts.onLog?.("App-info template applied successfully");
+}
+
+export interface HuaweiAssetFile {
+  fileName: string;
+  fileDestUrl: string;
+  size: number;
+}
+
+export interface ListingAssetOptions {
+  creds?: FastlaneCredentials;
+  lang?: string;
+  onLog?: (line: string) => void | Promise<void>;
+}
+
+function obsHeaders(info: UploadUrlInfo, contentLength: number): Record<string, string> {
+  if (info.headers && Object.keys(info.headers).length > 0) {
+    return { ...info.headers, "Content-Length": String(contentLength) };
+  }
+
+  const headers: Record<string, string | undefined> = {
+    Authorization: info.authCode,
+    "Content-Type": "application/octet-stream",
+    "user-agent": info.userAgent,
+    Host: info.host,
+    "x-amz-date": info.date,
+    "x-amz-content-sha256": info.contentHash,
+    "Content-Length": String(contentLength),
+  };
+  return Object.fromEntries(Object.entries(headers).filter(([, value]) => value)) as Record<string, string>;
+}
+
+async function uploadFileToObs(
+  appId: string,
+  filePath: string,
+  fileName: string,
+  opts: ListingAssetOptions = {},
+): Promise<HuaweiAssetFile> {
+  const creds = opts.creds ?? huaweiCredsFromEnv();
+  const token = await getConnectToken(creds);
+  const stat = await fs.stat(filePath);
+  const suffix = path.extname(fileName).replace(/^\./, "").toLowerCase();
+  const uploadUrl =
+    `${CONNECT_BASE}/publish/v2/upload-url/for-obs` +
+    `?appId=${encodeURIComponent(appId)}` +
+    `&fileName=${encodeURIComponent(fileName)}` +
+    `&contentLength=${stat.size}` +
+    `&suffix=${encodeURIComponent(suffix)}`;
+
+  const res = await fetch(uploadUrl, {
+    headers: { Authorization: `Bearer ${token}`, client_id: creds.clientId },
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`upload-url query failed for ${fileName} (HTTP ${res.status}): ${text}`);
+
+  const body = JSON.parse(text) as RetEnvelope & { urlInfo?: UploadUrlInfo };
+  const code = body.ret?.code ?? 0;
+  if (code !== 0) {
+    throw new Error(`upload-url query failed for ${fileName} (code ${code}): ${body.ret?.msg ?? text}`);
+  }
+  const info = body.urlInfo;
+  if (!info?.url || !info.objectId) throw new Error(`upload-url query returned no urlInfo for ${fileName}`);
+
+  const put = await fetch(info.url, {
+    method: info.method ?? "PUT",
+    headers: obsHeaders(info, stat.size),
+    body: await fs.readFile(filePath),
+  });
+  const putText = await put.text();
+  if (!put.ok) throw new Error(`OBS upload failed for ${fileName} (HTTP ${put.status}): ${putText}`);
+
+  return { fileName, fileDestUrl: info.objectId, size: stat.size };
+}
+
+async function saveAppFileInfo(
+  appId: string,
+  fileType: 0 | 2,
+  files: HuaweiAssetFile[],
+  opts: ListingAssetOptions = {},
+): Promise<void> {
+  if (files.length === 0) return;
+  const creds = opts.creds ?? huaweiCredsFromEnv();
+  const token = await getConnectToken(creds);
+  const lang = opts.lang ?? "en-US";
+  const res = await fetch(`${CONNECT_BASE}/publish/v2/app-file-info?appId=${encodeURIComponent(appId)}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      client_id: creds.clientId,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      fileType,
+      lang,
+      files: files.map((file) => ({
+        fileName: file.fileName,
+        fileDestUrl: file.fileDestUrl,
+      })),
+    }),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`app-file-info update failed for type ${fileType} (HTTP ${res.status}): ${text}`);
+
+  let body: RetEnvelope = {};
+  try {
+    body = JSON.parse(text) as RetEnvelope;
+  } catch {
+    // Empty success response.
+  }
+  const code = body.ret?.code ?? 0;
+  if (code !== 0) {
+    throw new Error(`app-file-info update failed for type ${fileType} (code ${code}): ${body.ret?.msg ?? text}`);
+  }
+}
+
+export async function uploadListingIcon(
+  appId: string,
+  iconPath: string,
+  opts: ListingAssetOptions = {},
+): Promise<void> {
+  await opts.onLog?.("Uploading app icon");
+  const icon = await uploadFileToObs(appId, iconPath, "icon.png", opts);
+  await saveAppFileInfo(appId, 0, [icon], opts);
+  await opts.onLog?.(`App icon uploaded (${icon.size} bytes)`);
+}
+
+export async function uploadListingScreenshots(
+  appId: string,
+  screenshots: Array<{ path: string; ordering?: number | null }>,
+  opts: ListingAssetOptions = {},
+): Promise<void> {
+  const ordered = [...screenshots].sort((a, b) => (a.ordering ?? 0) - (b.ordering ?? 0));
+  if (ordered.length === 0) {
+    await opts.onLog?.("No screenshots generated; skipping visual assets");
+    return;
+  }
+
+  await opts.onLog?.(`Uploading ${ordered.length} screenshot visual assets`);
+  const files: HuaweiAssetFile[] = [];
+  for (let i = 0; i < ordered.length; i++) {
+    files.push(await uploadFileToObs(appId, ordered[i].path, `screenshot-${i + 1}.png`, opts));
+  }
+  await saveAppFileInfo(appId, 2, files, opts);
+  await opts.onLog?.(`Screenshot visual assets uploaded (${files.length})`);
 }

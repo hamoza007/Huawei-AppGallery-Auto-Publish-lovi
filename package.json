@@ -13,7 +13,8 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "worker": "tsx src/worker/index.ts",
-    "huawei:console": "tsx scripts/content-rating-browser.ts"
+    "huawei:console": "tsx scripts/content-rating-browser.ts",
+    "huawei:rating-no": "tsx scripts/content-rating-no-browser.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

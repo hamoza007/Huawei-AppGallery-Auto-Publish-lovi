@@ -4,6 +4,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { createHash } from "crypto";
 import sharp from "sharp";
+import AdmZip from "adm-zip";
 
 // Huawei AppGallery requires a 512x512 app icon. If the icon extracted from the
 // APK is smaller than this, upscale it to 512x512 so it always meets the store
@@ -76,6 +77,56 @@ function pickBase64Icon(icon: unknown): string | null {
   return null;
 }
 
+async function writeHuaweiIcon(raw: Buffer, outDir: string): Promise<string | null> {
+  const pngPath = path.join(outDir, "icon.png");
+  try {
+    const meta = await sharp(raw).metadata();
+    const w = meta.width ?? 0;
+    const h = meta.height ?? 0;
+    if (w < REQUIRED_ICON_SIZE || h < REQUIRED_ICON_SIZE) {
+      await sharp(raw)
+        .resize(REQUIRED_ICON_SIZE, REQUIRED_ICON_SIZE, {
+          fit: "contain",
+          background: { r: 255, g: 255, b: 255, alpha: 0 },
+        })
+        .png()
+        .toFile(pngPath);
+    } else {
+      await sharp(raw).png().toFile(pngPath);
+    }
+    return pngPath;
+  } catch {
+    try {
+      await fs.writeFile(pngPath, raw);
+      return pngPath;
+    } catch {
+      return null;
+    }
+  }
+}
+
+export async function extractApkIcon(apkPath: string, outDir: string): Promise<string | null> {
+  await fs.mkdir(outDir, { recursive: true });
+  try {
+    const zip = new AdmZip(apkPath);
+    const densities = ["xxxhdpi", "xxhdpi", "xhdpi", "hdpi", "mdpi", "ldpi"];
+    const entries = zip
+      .getEntries()
+      .filter((entry) => !entry.isDirectory && /res\/mipmap[^/]*\/icon\.png$/i.test(entry.entryName))
+      .map((entry) => ({
+        entry,
+        rank: densities.findIndex((density) => entry.entryName.toLowerCase().includes(density)),
+      }))
+      .sort((a, b) => (a.rank < 0 ? 99 : a.rank) - (b.rank < 0 ? 99 : b.rank));
+
+    const chosen = entries[0]?.entry;
+    if (!chosen) return null;
+    return await writeHuaweiIcon(chosen.getData(), outDir);
+  } catch {
+    return null;
+  }
+}
+
 export async function parseApk(apkPath: string, outDir: string): Promise<ParsedApk> {
   await fs.mkdir(outDir, { recursive: true });
 
@@ -89,32 +140,14 @@ export async function parseApk(apkPath: string, outDir: string): Promise<ParsedA
   const iconBase64 = pickBase64Icon(info.application?.icon ?? info.icon);
   if (iconBase64) {
     const stripped = iconBase64.replace(/^data:image\/\w+;base64,/, "");
-    const pngPath = path.join(outDir, "icon.png");
     try {
       const raw = Buffer.from(stripped, "base64");
-      // Resize the icon up to 512x512 if it is smaller, so it always meets the
-      // Huawei AppGallery requirement. Larger icons are passed through as-is.
-      try {
-        const meta = await sharp(raw).metadata();
-        const w = meta.width ?? 0;
-        const h = meta.height ?? 0;
-        if (w < REQUIRED_ICON_SIZE || h < REQUIRED_ICON_SIZE) {
-          await sharp(raw)
-            .resize(REQUIRED_ICON_SIZE, REQUIRED_ICON_SIZE, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 0 } })
-            .png()
-            .toFile(pngPath);
-        } else {
-          await sharp(raw).png().toFile(pngPath);
-        }
-      } catch {
-        // sharp couldn't decode it — fall back to writing the raw bytes.
-        await fs.writeFile(pngPath, raw);
-      }
-      iconPngPath = pngPath;
+      iconPngPath = await writeHuaweiIcon(raw, outDir);
     } catch {
       iconPngPath = null;
     }
   }
+  iconPngPath ??= await extractApkIcon(apkPath, outDir);
 
   return {
     packageName: info.package ?? "",

@@ -14,6 +14,9 @@ export interface HuaweiConsoleAutomationOptions {
 const DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9222";
 const CONSOLE_HOME =
   "https://developer.huawei.com/consumer/en/service/josp/agc/index.html#/myApp";
+const DEFAULT_PRIVACY_POLICY_URL = "https://sites.google.com/view/makeuphanane";
+const DEFAULT_CATEGORY_LABELS = ["Games", "Role-playing", "Incremental games", "Casual game"];
+const DEFAULT_COMPATIBLE_DEVICES = ["Mobile Phone", "Tablet"];
 
 function truthy(value: string | undefined, fallback = false): boolean {
   if (value === undefined) return fallback;
@@ -61,6 +64,41 @@ async function clickAny(page: Page, labels: string[], timeout = 2500): Promise<b
   return false;
 }
 
+async function scrollAndClickAny(page: Page, labels: string[], timeout = 2500): Promise<boolean> {
+  for (let pass = 0; pass < 6; pass += 1) {
+    if (await clickAny(page, labels, timeout)) return true;
+    await page.mouse.wheel(0, 650).catch(() => undefined);
+    await page.waitForTimeout(300);
+  }
+  return false;
+}
+
+async function clickScopedChoice(page: Page, fieldLabels: string[], choices: string[]): Promise<boolean> {
+  for (const fieldLabel of fieldLabels) {
+    const fieldNode = await firstVisible(page.getByText(new RegExp(fieldLabel, "i")), 1200);
+    if (!fieldNode) continue;
+    const container = fieldNode.locator(
+      "xpath=ancestor::*[self::div or self::section or self::form or self::tr][1]",
+    );
+    for (const choice of choices) {
+      const escaped = choice.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const localChoice = await firstVisible(
+        container
+          .getByRole("radio", { name: new RegExp(escaped, "i") })
+          .or(container.getByRole("checkbox", { name: new RegExp(escaped, "i") }))
+          .or(container.getByText(new RegExp(`^\\s*${escaped}\\s*$`, "i"))),
+        1200,
+      );
+      if (localChoice) {
+        await localChoice.click({ timeout: 2000 }).catch(async () => localChoice.click({ force: true, timeout: 2000 }));
+        await page.waitForTimeout(300);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 async function fillNearLabel(page: Page, label: string, value: string): Promise<boolean> {
   const directTarget = await firstVisible(page.getByLabel(new RegExp(label, "i")));
   if (directTarget) {
@@ -75,6 +113,13 @@ async function fillNearLabel(page: Page, label: string, value: string): Promise<
   if (!input) return false;
   await input.fill(value);
   return true;
+}
+
+async function fillScopedText(page: Page, labels: string[], value: string): Promise<boolean> {
+  for (const label of labels) {
+    if (await fillNearLabel(page, label, value).catch(() => false)) return true;
+  }
+  return false;
 }
 
 async function chooseOption(page: Page, label: string): Promise<boolean> {
@@ -127,40 +172,45 @@ async function saveIfPossible(page: Page) {
   await clickAny(page, ["Save", "OK", "Confirm", "Submit"], 1500);
 }
 
+async function applyCompatibleDevices(page: Page, opts: HuaweiConsoleAutomationOptions) {
+  await log(opts, `Setting compatible devices: ${DEFAULT_COMPATIBLE_DEVICES.join(" and ")}`);
+  if (!(await scrollAndClickAny(page, ["Compatible devices", "Device types", "Supported devices"], 1500))) return;
+  for (const device of DEFAULT_COMPATIBLE_DEVICES) {
+    await clickAny(page, [device], 1200);
+  }
+  await saveIfPossible(page);
+}
+
 async function applyBasicFields(page: Page, opts: HuaweiConsoleAutomationOptions) {
   const template = opts.template ?? {};
-  await clickAny(page, ["App information", "App Information", "Version information", "Version Information"], 2000);
+  await scrollAndClickAny(page, ["Version information", "Version Information", "Draft"], 2000);
 
-  if (template.privacyPolicy) {
+  const privacyPolicyUrl = template.privacyPolicy ?? DEFAULT_PRIVACY_POLICY_URL;
+  if (privacyPolicyUrl) {
     await log(opts, "Setting privacy policy URL");
-    await fillNearLabel(page, "Privacy", template.privacyPolicy);
+    await fillScopedText(page, ["Privacy policy URL", "Privacy"], privacyPolicyUrl);
   }
 
   await log(opts, "Setting payment type to Free when the field is present");
-  if (await clickAny(page, ["Payment type", "Paid or free", "Pricing"], 1200)) {
-    await clickAny(page, ["Free"], 1200);
-  }
+  await clickScopedChoice(page, ["Payment type", "Paid or free", "Pricing"], ["Free"]);
+
+  await log(opts, "Setting use testing version to No when the field is present");
+  await clickScopedChoice(page, ["Use testing version", "Testing version"], ["No"]);
 
   await log(opts, "Setting collect personal data to No when the field is present");
-  if (await clickAny(page, ["Collect personal data", "Personal data"], 1200)) {
-    await clickAny(page, ["No"], 1200);
-  }
+  await clickScopedChoice(page, ["Collect personal data", "Personal data"], ["No"]);
 
   await log(opts, "Setting generative AI declaration to Not involved when present");
-  if (await clickAny(page, ["Generative AI", "AI-generated", "AI service"], 1200)) {
-    await clickAny(page, ["Not involved", "No"], 1200);
-  }
+  await clickScopedChoice(page, ["Generative AI", "AI-generated", "AI service"], ["Not involved", "No"]);
 
   await log(opts, "Setting release time to Immediately when present");
-  if (await clickAny(page, ["Release time", "Release schedule"], 1200)) {
-    await clickAny(page, ["Immediately", "Upon approval"], 1200);
-  }
+  await clickScopedChoice(page, ["Release time", "Release schedule"], ["Immediately", "Upon approval"]);
 
   await saveIfPossible(page);
 }
 
 async function applyCategory(page: Page, opts: HuaweiConsoleAutomationOptions) {
-  const categoryLabels = (process.env.HUAWEI_CONSOLE_CATEGORY_LABELS ?? "Games|Role-playing|Incremental games")
+  const categoryLabels = (process.env.HUAWEI_CONSOLE_CATEGORY_LABELS ?? DEFAULT_CATEGORY_LABELS.join("|"))
     .split("|")
     .map((part) => part.trim())
     .filter(Boolean);
@@ -180,16 +230,16 @@ async function applyCategory(page: Page, opts: HuaweiConsoleAutomationOptions) {
 
 async function applyCountries(page: Page, opts: HuaweiConsoleAutomationOptions) {
   const countries = sanitizeCountries(opts.template?.publishCountry);
-  if (!countries) return;
 
-  await log(opts, "Applying publish countries through the console when the country picker is present");
-  if (!(await clickAny(page, ["Version information", "Version Information", "Distribution", "Countries"], 2500))) return;
+  await log(opts, "Selecting all publish countries except Chinese mainland");
+  if (!(await scrollAndClickAny(page, ["Version information", "Version Information", "Distribution", "Countries"], 2500))) return;
   if (await clickAny(page, ["Select all", "All countries", "All Countries"], 2500)) {
-    await clickAny(page, ["Chinese mainland", "China"], 1200);
+    await clickAny(page, ["Chinese mainland"], 1200);
     await saveIfPossible(page);
     return;
   }
 
+  if (!countries) return;
   const countryList = countries.split(",");
   for (const country of countryList) {
     await fillNearLabel(page, "Search", country).catch(() => false);
@@ -219,13 +269,14 @@ async function answerVisibleNoQuestions(page: Page, opts: HuaweiConsoleAutomatio
 
 async function completeContentRating(page: Page, opts: HuaweiConsoleAutomationOptions) {
   await log(opts, "Opening content rating questionnaire");
-  const opened = await clickAny(page, ["Content rating", "Age rating", "Rating questionnaire"], 5000);
+  const opened = await scrollAndClickAny(page, ["Content rating", "Age rating", "Rating questionnaire"], 5000);
   if (!opened) {
     await log(opts, "Content rating section was not visible; skipping questionnaire");
     return;
   }
+  await clickAny(page, ["Start questionnaire", "Start", "Edit", "Rate by age"], 3000);
 
-  for (let pass = 0; pass < 6; pass += 1) {
+  for (let pass = 0; pass < 12; pass += 1) {
     await clickAny(page, ["Expand all", "Open all"], 1000);
     const expanded = await clickAny(page, [
       "Violence",
@@ -241,6 +292,7 @@ async function completeContentRating(page: Page, opts: HuaweiConsoleAutomationOp
       "Miscellaneous",
     ], 700);
     const answered = await answerVisibleNoQuestions(page, opts);
+    await clickAny(page, ["Next"], 1200);
     if (!expanded && answered === 0) break;
     await page.waitForTimeout(400);
   }
@@ -253,11 +305,23 @@ export async function runHuaweiConsoleRequiredFields(opts: HuaweiConsoleAutomati
   const { browser, page } = await connect(opts);
   try {
     await openApp(page, opts);
+    await applyCompatibleDevices(page, opts);
     await applyCategory(page, opts);
     await applyCountries(page, opts);
     await applyBasicFields(page, opts);
     await completeContentRating(page, opts);
     await log(opts, "Huawei Console automation completed");
+  } finally {
+    await browser.close().catch(() => undefined);
+  }
+}
+
+export async function runHuaweiContentRatingNo(opts: HuaweiConsoleAutomationOptions): Promise<void> {
+  const { browser, page } = await connect(opts);
+  try {
+    await openApp(page, opts);
+    await completeContentRating(page, opts);
+    await log(opts, "Huawei content rating questionnaire completed");
   } finally {
     await browser.close().catch(() => undefined);
   }

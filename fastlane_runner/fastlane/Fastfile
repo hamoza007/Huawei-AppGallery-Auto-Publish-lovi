@@ -43,10 +43,11 @@ platform :android do
   desc "Resolve AGC app_id from package name"
   lane :get_app_id do |options|
     begin
-      app_id = huawei_appgallery_connect_get_app_id(
-        client_id: agc_client_id,
-        client_secret: agc_client_secret,
-        package_id: options[:package_id]
+      token = Fastlane::Helper::HuaweiAppgalleryConnectHelper.get_token(agc_client_id, agc_client_secret)
+      app_id = Fastlane::Helper::HuaweiAppgalleryConnectHelper.get_app_id(
+        token,
+        agc_client_id,
+        options[:package_id]
       )
     rescue NoMethodError
       # The plugin raises when the appid-list response has no entry for the

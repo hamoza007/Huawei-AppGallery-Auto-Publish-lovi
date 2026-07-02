@@ -3,13 +3,18 @@
 import path from "path";
 import { promises as fs } from "fs";
 import { prisma } from "./db";
-import { parseApk } from "./apk-parser";
+import { extractApkIcon, parseApk } from "./apk-parser";
 import { generateMetadata, translateMetadata } from "./metadata-generator";
 import { TARGET_LOCALES, DEFAULT_LOCALE } from "./locales";
 import { generateScreenshots } from "./screenshots";
 import { resolveAppId, publishApk, updateLocalization, submitForReview } from "./fastlane";
 import { writeFastlaneMetadata, writeChangelog } from "./fastlane-metadata";
-import { applyAppInfoTemplate, templateIsEmpty } from "./huawei-app-info";
+import {
+  applyAppInfoTemplate,
+  templateIsEmpty,
+  uploadListingIcon,
+  uploadListingScreenshots,
+} from "./huawei-app-info";
 import { resolveAppTemplate } from "./app-template";
 import {
   huaweiConsoleAutomationEnabled,
@@ -320,6 +325,40 @@ export async function stepPublishToHuawei(uploadId: string) {
     );
   }
 
+  // 4) Upload AppGallery listing media. Fastlane's Huawei plugin uploads the
+  //    binary and text metadata, but it does not attach app icons or screenshots.
+  //    Huawei requires these assets before submit, and the app-file-info API is
+  //    localized, so we attach them to the default locale.
+  let iconPath = upload.iconPath;
+  if (!iconPath) {
+    await logEvent(uploadId, "info", "No parsed icon stored; extracting app icon from APK resources");
+    iconPath = await extractApkIcon(upload.apkPath, assetDir);
+    if (iconPath) {
+      await prisma.upload.update({ where: { id: uploadId }, data: { iconPath } });
+    }
+  }
+  if (iconPath) {
+    try {
+      await uploadListingIcon(appId, iconPath, {
+        lang: DEFAULT_LOCALE,
+        onLog: (line) => logEvent(uploadId, "info", `[huawei-assets] ${line}`),
+      });
+    } catch (err) {
+      await logEvent(uploadId, "error", `App icon upload failed: ${(err as Error).message}`);
+    }
+  } else {
+    await logEvent(uploadId, "warn", "No app icon available to upload to Huawei");
+  }
+
+  try {
+    await uploadListingScreenshots(appId, upload.screenshots, {
+      lang: DEFAULT_LOCALE,
+      onLog: (line) => logEvent(uploadId, "info", `[huawei-assets] ${line}`),
+    });
+  } catch (err) {
+    await logEvent(uploadId, "error", `Screenshot visual asset upload failed: ${(err as Error).message}`);
+  }
+
   await logEvent(
     uploadId,
     "info",
@@ -337,7 +376,7 @@ export async function stepPublishToHuawei(uploadId: string) {
     { onLog },
   );
 
-  // 4) Complete console-only fields (category/countries on first versions,
+  // 5) Complete console-only fields (category/countries on first versions,
   //    content rating, personal data, AI declaration, release timing) when a
   //    logged-in Chrome CDP session is available.
   let consoleAutomationCompleted = false;
@@ -367,7 +406,7 @@ export async function stepPublishToHuawei(uploadId: string) {
     );
   }
 
-  // 5) Optionally submit for review (off by default).
+  // 6) Optionally submit for review (off by default).
   if (autoSubmit) {
     if (requireConsoleBeforeAutoSubmit() && !consoleAutomationCompleted) {
       await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });
