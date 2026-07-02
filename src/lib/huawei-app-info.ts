@@ -48,14 +48,14 @@ type UploadUrlInfo = {
 };
 
 // Keep only valid 2-letter ISO codes; drop Huawei's synthetic "ALL" token,
-// blanks and duplicates while preserving order.
+// Chinese mainland (CN), blanks and duplicates while preserving order.
 export function sanitizeCountries(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
   const seen = new Set<string>();
   const out: string[] = [];
   for (const part of raw.split(/[,\s]+/)) {
     const c = part.trim().toUpperCase();
-    if (/^[A-Z]{2}$/.test(c) && !seen.has(c)) {
+    if (/^[A-Z]{2}$/.test(c) && c !== "CN" && !seen.has(c)) {
       seen.add(c);
       out.push(c);
     }
