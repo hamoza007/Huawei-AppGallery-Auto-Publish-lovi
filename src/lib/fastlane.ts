@@ -148,13 +148,24 @@ export async function resolveAppId(
   packageId: string,
   opts?: Pick<RunLaneOptions, "creds" | "onLog">,
 ): Promise<string | null> {
-  const { result } = await runLane<{ app_id?: string | null }>("get_app_id", {
+  const { result, stdout, stderr } = await runLane<{ app_id?: string | null | boolean }>("get_app_id", {
     params: { package_id: packageId },
     timeoutMs: 5 * 60 * 1000,
     ...opts,
   });
-  const id = result?.app_id;
-  return id ? String(id) : null;
+  const raw = result?.app_id == null ? "" : String(result.app_id).trim();
+  if (/^\d+$/.test(raw)) return raw;
+
+  const output = `${stdout}\n${stderr}`;
+  const match = output.match(/RESOLVED_APP_ID=(\d+)/);
+  if (match) return match[1];
+
+  await opts?.onLog?.(
+    raw
+      ? `Ignoring invalid get_app_id result "${raw}" for package ${packageId}`
+      : `No numeric AGC app_id found for package ${packageId}`,
+  );
+  return null;
 }
 
 export interface PublishParams {
