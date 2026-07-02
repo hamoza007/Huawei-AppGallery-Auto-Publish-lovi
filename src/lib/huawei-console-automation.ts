@@ -172,6 +172,98 @@ async function saveIfPossible(page: Page) {
   await clickAny(page, ["Save", "OK", "Confirm", "Submit"], 1500);
 }
 
+async function viewportSize(page: Page): Promise<{ width: number; height: number }> {
+  const configured = page.viewportSize();
+  if (configured) return configured;
+  return page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+}
+
+async function modalMetrics(page: Page) {
+  const vp = await viewportSize(page);
+  const left = Math.max(250, Math.round(vp.width * 0.29));
+  const right = vp.width - 4;
+  const top = Math.max(105, Math.round(vp.height * 0.14));
+  const bottom = Math.min(vp.height - 110, Math.round(vp.height * 0.86));
+  return {
+    left,
+    right,
+    top,
+    bottom,
+    radioX: left + 78,
+    rowX: left + 280,
+    buttonY: bottom - 58,
+    submitX: right - 176,
+    verifyX: right - 235,
+  };
+}
+
+async function mouseClick(page: Page, x: number, y: number, delay = 450) {
+  await page.mouse.click(x, y);
+  await page.waitForTimeout(delay);
+}
+
+async function wheelModal(page: Page, amount: number, delay = 450) {
+  const m = await modalMetrics(page);
+  await page.mouse.move(Math.round((m.left + m.right) / 2), Math.round((m.top + m.bottom) / 2));
+  await page.mouse.wheel(0, amount);
+  await page.waitForTimeout(delay);
+}
+
+async function clickNoAt(page: Page, y: number) {
+  const m = await modalMetrics(page);
+  await mouseClick(page, m.radioX, y, 300);
+}
+
+async function answerGameContentRatingByCoordinates(page: Page, opts: HuaweiConsoleAutomationOptions) {
+  const m = await modalMetrics(page);
+  await log(opts, "Using Huawei game content-rating coordinate fallback");
+
+  // The AGC questionnaire's row text is not available to Playwright on some
+  // accounts. Coordinates are relative to the modal geometry and were chosen so
+  // they scale across the normal Huawei console viewport and the in-app browser.
+  await mouseClick(page, m.rowX, m.top + 292); // Violence
+  await clickNoAt(page, m.top + 424);
+
+  await mouseClick(page, m.rowX, m.top + 348); // Fear
+  await clickNoAt(page, m.top + 428);
+
+  await mouseClick(page, m.rowX, m.top + 402); // Sexuality
+  await wheelModal(page, 220);
+  await clickNoAt(page, m.top + 312);
+  await clickNoAt(page, m.top + 510); // Strong language, now visible
+
+  await wheelModal(page, 180);
+  await clickNoAt(page, m.top + 222); // Crude humor
+
+  await mouseClick(page, m.rowX, m.top + 220); // Controlled substances
+  await clickNoAt(page, m.top + 318);
+
+  await mouseClick(page, m.rowX, m.top + 270); // Gambling
+  await clickNoAt(page, m.top + 318);
+
+  await mouseClick(page, m.rowX, m.top + 325); // Legal compliance
+  await clickNoAt(page, m.top + 378);
+  await wheelModal(page, 350);
+  await clickNoAt(page, m.top + 192);
+  await clickNoAt(page, m.top + 335);
+
+  await mouseClick(page, m.rowX, m.top + 300); // Interactions among players
+  await clickNoAt(page, m.top + 410);
+
+  await mouseClick(page, m.rowX, m.top + 352); // Player information collection
+  await wheelModal(page, 180);
+  await clickNoAt(page, m.top + 382);
+  await clickNoAt(page, m.top + 525);
+
+  await mouseClick(page, m.rowX, m.top + 352); // Others
+  await wheelModal(page, 180);
+  await clickNoAt(page, m.top + 338);
+  await wheelModal(page, 180);
+  await clickNoAt(page, m.top + 374);
+
+  await log(opts, "Submitted No answers for all visible game questionnaire sections");
+}
+
 async function applyCompatibleDevices(page: Page, opts: HuaweiConsoleAutomationOptions) {
   await log(opts, `Setting compatible devices: ${DEFAULT_COMPATIBLE_DEVICES.join(" and ")}`);
   if (!(await scrollAndClickAny(page, ["Compatible devices", "Device types", "Supported devices"], 1500))) return;
@@ -274,7 +366,14 @@ async function completeContentRating(page: Page, opts: HuaweiConsoleAutomationOp
     await log(opts, "Content rating section was not visible; skipping questionnaire");
     return;
   }
-  await clickAny(page, ["Start questionnaire", "Start", "Edit", "Rate by age"], 3000);
+  await clickAny(page, ["Set", "Start questionnaire", "Start", "Edit", "Rate by age"], 3000);
+  await page.waitForTimeout(1200);
+  if (!(await clickAny(page, ["Fill out questionnaire"], 2000))) {
+    const m = await modalMetrics(page);
+    await mouseClick(page, m.left + 120, m.top + 118, 1800);
+  } else {
+    await page.waitForTimeout(2500);
+  }
 
   for (let pass = 0; pass < 12; pass += 1) {
     await clickAny(page, ["Expand all", "Open all"], 1000);
@@ -297,7 +396,23 @@ async function completeContentRating(page: Page, opts: HuaweiConsoleAutomationOp
     await page.waitForTimeout(400);
   }
 
+  await answerGameContentRatingByCoordinates(page, opts).catch(async (err) => {
+    await log(opts, `Coordinate fallback did not complete cleanly: ${(err as Error).message}`);
+  });
+
   await clickAny(page, ["Verify", "Save", "Confirm"], 3000);
+  await page.waitForTimeout(3000);
+  if (await clickAny(page, ["OK"], 1500)) {
+    await page.waitForTimeout(800);
+  }
+
+  // Huawei may show a computed rating result screen after Verify. Select the
+  // lowest expected rating if it is visible, then submit and save the draft page.
+  await clickAny(page, ["Rated 3+", "3+"], 1500);
+  await clickAny(page, ["Submit"], 3000);
+  await page.waitForTimeout(2500);
+  await clickAny(page, ["Save"], 3000);
+  await clickAny(page, ["OK"], 3000);
   await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
 }
 
