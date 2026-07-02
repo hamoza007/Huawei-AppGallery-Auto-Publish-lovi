@@ -14,6 +14,8 @@
 //    (e.g. 2 / 20 / 10115 = Games / Role-playing / Incremental games).
 //  - publishCountry is a comma-separated list of ISO codes. The GET response may
 //    include a synthetic "ALL" token which the PUT rejects, so we always strip it.
+//  - appAdapters is Huawei's compatible-device selector. The live console
+//    values captured from Mobile Phone + Tablet are "4,5,15".
 //  - contentRate / age rating come from the console IARC questionnaire and are
 //    NOT writable here, so they are intentionally omitted.
 import { huaweiCredsFromEnv, type FastlaneCredentials } from "./fastlane";
@@ -21,6 +23,7 @@ import { promises as fs } from "fs";
 import path from "path";
 
 const CONNECT_BASE = "https://connect-api.cloud.huawei.com/api";
+export const DEFAULT_APP_ADAPTERS = "4,5,15";
 
 export interface AppInfoTemplate {
   defaultLang?: string;
@@ -31,6 +34,8 @@ export interface AppInfoTemplate {
   // Comma-separated ISO country/region codes (no "ALL" token).
   publishCountry?: string;
   privacyPolicy?: string;
+  // Huawei compatible devices, e.g. "4,5,15" for Mobile Phone and Tablet.
+  appAdapters?: string;
 }
 
 type RetEnvelope = { ret?: { code?: number; msg?: string } };
@@ -92,6 +97,7 @@ function buildPayload(t: AppInfoTemplate): Record<string, unknown> {
   const pc = sanitizeCountries(t.publishCountry);
   if (pc) p.publishCountry = pc;
   if (t.privacyPolicy) p.privacyPolicy = t.privacyPolicy;
+  if (t.appAdapters) p.appAdapters = t.appAdapters;
   return p;
 }
 
@@ -106,6 +112,7 @@ export interface RawAppInfo {
   grandChildType?: number;
   publishCountry?: string;
   privacyPolicy?: string;
+  appAdapters?: string;
   [k: string]: unknown;
 }
 
@@ -141,6 +148,7 @@ export function templateFromAppInfo(info: RawAppInfo): AppInfoTemplate {
     grandChildType: typeof info.grandChildType === "number" ? info.grandChildType : undefined,
     publishCountry: sanitizeCountries(info.publishCountry),
     privacyPolicy: info.privacyPolicy || undefined,
+    appAdapters: info.appAdapters || DEFAULT_APP_ADAPTERS,
   };
 }
 

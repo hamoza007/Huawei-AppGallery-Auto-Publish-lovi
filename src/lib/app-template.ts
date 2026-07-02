@@ -4,6 +4,7 @@
 // environment-variable fallback.
 import { getSetting, setSetting } from "./settings";
 import {
+  DEFAULT_APP_ADAPTERS,
   fetchAppInfo,
   templateFromAppInfo,
   sanitizeCountries,
@@ -27,6 +28,7 @@ function fromEnv(): AppInfoTemplate {
     grandChildType: numOrUndef(process.env.HUAWEI_TPL_GRANDCHILD_TYPE),
     publishCountry: process.env.HUAWEI_TPL_PUBLISH_COUNTRY || undefined,
     privacyPolicy: process.env.HUAWEI_TPL_PRIVACY_POLICY || process.env.PRIVACY_POLICY_URL || DEFAULT_PRIVACY_POLICY_URL,
+    appAdapters: process.env.HUAWEI_TPL_APP_ADAPTERS || DEFAULT_APP_ADAPTERS,
   };
 }
 
@@ -40,6 +42,7 @@ export function clean(t: AppInfoTemplate): AppInfoTemplate {
   const pc = sanitizeCountries(t.publishCountry);
   if (pc) out.publishCountry = pc;
   if (t.privacyPolicy) out.privacyPolicy = t.privacyPolicy;
+  if (t.appAdapters) out.appAdapters = t.appAdapters;
   return out;
 }
 
