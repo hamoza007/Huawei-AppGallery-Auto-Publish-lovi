@@ -15,6 +15,10 @@ const SCREENSHOT_SOURCES: Array<{ value: string; label: string; hint: string }> 
   { value: "template", label: "Template (icon + tagline)", hint: "Fast deterministic mockups using the app icon and generated taglines." },
 ];
 
+const CHUNK_THRESHOLD = 10 * 1024 * 1024;
+const CHUNK_SIZE = 5 * 1024 * 1024;
+const MAX_PARALLEL_CHUNKS = 4;
+
 export function UploadDropzone({ apps }: { apps: AppOption[] }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -31,6 +35,18 @@ export function UploadDropzone({ apps }: { apps: AppOption[] }) {
     setError(null);
     setIsUploading(true);
     setProgress(0);
+
+    if (file.size > CHUNK_THRESHOLD) {
+      try {
+        const id = await uploadChunked(file);
+        router.push(`/uploads/${id}`);
+      } catch (err) {
+        setError(`Upload failed: ${(err as Error).message}`);
+      } finally {
+        setIsUploading(false);
+      }
+      return;
+    }
 
     const form = new FormData();
     form.append("file", file);
@@ -58,6 +74,64 @@ export function UploadDropzone({ apps }: { apps: AppOption[] }) {
       setError("Network error");
     };
     xhr.send(form);
+  }
+
+  async function uploadChunked(file: File): Promise<string> {
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    const createRes = await fetch("/api/uploads/chunked", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: file.name,
+        fileSize: file.size,
+        totalChunks,
+        huaweiAppId: selectedAppId || null,
+        screenshotSource,
+        metadataPrompt: metadataPrompt.trim() || null,
+        screenshotPrompt: screenshotPrompt.trim() || null,
+      }),
+    });
+    const createJson = await createRes.json();
+    if (!createRes.ok) throw new Error(createJson.error ?? "Could not start chunked upload");
+    const sessionId = createJson.sessionId as string;
+
+    let uploaded = 0;
+    let next = 0;
+    async function uploadOne(index: number) {
+      const start = index * CHUNK_SIZE;
+      const chunk = file.slice(start, Math.min(start + CHUNK_SIZE, file.size));
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const form = new FormData();
+        form.append("index", String(index));
+        form.append("chunk", chunk, `${file.name}.part${index}`);
+        const res = await fetch(`/api/uploads/chunked/${sessionId}`, { method: "POST", body: form });
+        if (res.ok) {
+          uploaded += chunk.size;
+          setProgress(Math.min(99, Math.round((uploaded / file.size) * 100)));
+          return;
+        }
+        if (attempt === 3) {
+          const text = await res.text();
+          throw new Error(`Chunk ${index + 1}/${totalChunks} failed: ${text}`);
+        }
+      }
+    }
+
+    async function worker() {
+      while (next < totalChunks) {
+        const index = next;
+        next += 1;
+        await uploadOne(index);
+      }
+    }
+
+    await Promise.all(Array.from({ length: Math.min(MAX_PARALLEL_CHUNKS, totalChunks) }, () => worker()));
+    setProgress(99);
+    const completeRes = await fetch(`/api/uploads/chunked/${sessionId}/complete`, { method: "POST" });
+    const completeJson = await completeRes.json();
+    if (!completeRes.ok) throw new Error(completeJson.error ?? "Could not complete chunked upload");
+    setProgress(100);
+    return completeJson.id as string;
   }
 
   const activeHint = SCREENSHOT_SOURCES.find((s) => s.value === screenshotSource)?.hint;
@@ -158,7 +232,7 @@ export function UploadDropzone({ apps }: { apps: AppOption[] }) {
           <div className="h-2 rounded-full bg-neutral-100">
             <div className="h-2 rounded-full bg-brand" style={{ width: `${progress}%` }} />
           </div>
-          <p className="mt-1 text-xs text-neutral-500">Uploading… {progress}%</p>
+          <p className="mt-1 text-xs text-neutral-500">Uploading... {progress}%</p>
         </div>
       )}
 
