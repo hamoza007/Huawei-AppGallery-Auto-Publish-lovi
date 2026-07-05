@@ -11,6 +11,12 @@ import { resolveAppId, publishApk, updateLocalization, submitForReview } from ".
 import { writeFastlaneMetadata, writeChangelog } from "./fastlane-metadata";
 import { applyAppInfoTemplate, templateIsEmpty, uploadAppIcon, uploadScreenshots, submitAgeRatingAllNo } from "./huawei-app-info";
 import { resolveAppTemplate } from "./app-template";
+import {
+  runConsoleFlow,
+  consoleAutomationEnabled,
+  profileExists,
+  type CategorySelection,
+} from "./huawei-console";
 import type { Upload } from "@prisma/client";
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads");
@@ -247,15 +253,80 @@ export async function stepReadyForReview(uploadId: string) {
 // Publish sub-step identifiers for UI tracking.
 const PUBLISH_STEPS = [
   "publish:template",
+  "publish:console-app-info",
   "publish:metadata",
   "publish:icon",
   "publish:screenshots",
   "publish:apk",
   "publish:rating",
+  "publish:console-version-info",
   "publish:submit",
 ] as const;
 
 type PublishStepId = (typeof PUBLISH_STEPS)[number];
+
+// Error signatures from Huawei that indicate we must fall back to console UI.
+function needsConsoleFallback(errMessage: string): {
+  category: boolean;
+  countries: boolean;
+} {
+  const m = errMessage.toLowerCase();
+  return {
+    // "BM not exist" -> category / basic metadata not initialised for new apps.
+    category: m.includes("bm not exist") || m.includes("204144651"),
+    // "BT not exist" -> country/region record missing for new apps.
+    countries: m.includes("bt not exist") || m.includes("204144694"),
+  };
+}
+
+function ratingNeedsConsoleFallback(errMessage: string): boolean {
+  const m = errMessage.toLowerCase();
+  return m.includes("http 404") || m.includes("age-rating");
+}
+
+function submitNeedsConsoleFallback(errMessage: string): boolean {
+  const m = errMessage.toLowerCase();
+  return (
+    m.includes("incomplete application version information") ||
+    m.includes("204144641")
+  );
+}
+
+// Build a CategorySelection from the numeric template IDs we store.
+function categoryFromTemplate(t: {
+  parentType?: number;
+  childType?: number;
+  grandChildType?: number;
+  isGameCasual?: boolean;
+}): CategorySelection | undefined {
+  // We only know the default mapping (Games / Role-playing / Incremental games
+  // + Casual game). If someone customises IDs they must also set the readable
+  // labels via env vars.
+  const parentLabel = process.env.HUAWEI_CATEGORY_PARENT_LABEL || "Games";
+  const childLabel = process.env.HUAWEI_CATEGORY_CHILD_LABEL || "Role-playing";
+  const grandChildLabel = process.env.HUAWEI_CATEGORY_GRAND_LABEL || "Incremental games";
+  const extraTag = t.isGameCasual === false ? undefined : (process.env.HUAWEI_CATEGORY_EXTRA_TAG || "Casual game");
+  if (!parentLabel || !childLabel || !grandChildLabel) return undefined;
+  return { parent: parentLabel, child: childLabel, grandChild: grandChildLabel, extraTag };
+}
+
+async function consoleAvailable(uploadId: string): Promise<boolean> {
+  if (!consoleAutomationEnabled()) {
+    await logEvent(uploadId, "warn", "[console] HUAWEI_CONSOLE_AUTOMATION disabled; skipping fallback");
+    return false;
+  }
+  if (process.env.HUAWEI_CDP_URL) return true; // CDP attach mode
+  const ok = await profileExists();
+  if (!ok) {
+    await logEvent(
+      uploadId,
+      "warn",
+      `[console] No persistent profile at ${process.env.HUAWEI_PROFILE_DIR || "/opt/huawei-profile"}. ` +
+        `Run \`npx tsx scripts/huawei-login.ts\` once on the host to enable console automation.`,
+    );
+  }
+  return ok;
+}
 
 async function publishStep(
   uploadId: string,
@@ -303,15 +374,53 @@ export async function stepPublishToHuawei(uploadId: string) {
 
   // 1) Apply app-info template FIRST (countries, category, device types).
   //    Huawei requires publishCountry before APK upload (error 204144694).
+  let templateError: string | undefined;
   if (!templateIsEmpty(template)) {
     const r = await publishStep(uploadId, "publish:template", "Apply app-info template (countries/category)", 87, async () => {
       await applyAppInfoTemplate(appId, template, {
         onLog: (line) => logEvent(uploadId, "info", `[app-info] ${line}`),
       });
     });
-    if (!r.ok) failures.push({ step: "App-info template", error: r.error! });
+    if (!r.ok) {
+      failures.push({ step: "App-info template", error: r.error! });
+      templateError = r.error;
+    }
   } else {
     await logEvent(uploadId, "info", "[step:publish:template:skip] No app-info template configured");
+  }
+
+  // 1b) Console fallback for App Information + Version Information basics
+  //     when the API rejected the template (BM/BT not exist for new apps).
+  if (templateError) {
+    const trigger = needsConsoleFallback(templateError);
+    if ((trigger.category || trigger.countries) && (await consoleAvailable(uploadId))) {
+      const category = trigger.category ? categoryFromTemplate(template) : undefined;
+      const setCountries = trigger.countries;
+      const r = await publishStep(
+        uploadId,
+        "publish:console-app-info",
+        `Console fallback: ${category ? "category" : ""}${category && setCountries ? " + " : ""}${setCountries ? "countries" : ""}`,
+        88,
+        async () => {
+          const results = await runConsoleFlow(appId, {
+            category,
+            setCountries,
+            onLog: (line) => logEvent(uploadId, "info", `[console] ${line}`),
+          });
+          const failed = results.filter((r) => !r.ok);
+          if (failed.length > 0) {
+            throw new Error(failed.map((f) => `${f.step}: ${f.error}`).join("; "));
+          }
+        },
+      );
+      if (r.ok) {
+        // Clear the template failure since we recovered.
+        const idx = failures.findIndex((f) => f.step === "App-info template");
+        if (idx >= 0) failures.splice(idx, 1);
+      } else {
+        failures.push({ step: "Console app-info fallback", error: r.error! });
+      }
+    }
   }
 
   // 2) Push localized metadata.
@@ -386,14 +495,58 @@ export async function stepPublishToHuawei(uploadId: string) {
     }
   }
 
-  // 6) Auto-answer content rating questionnaire.
+  // 6) Auto-answer content rating questionnaire. Try API first; fall back to
+  //    console UI when the API returns 404 (its usual failure mode).
+  let ratingApiFailed = false;
   if (template.autoContentRating) {
     const r = await publishStep(uploadId, "publish:rating", "Auto-answer content rating (all No)", 97, async () => {
       await submitAgeRatingAllNo(appId, {
         onLog: (line) => logEvent(uploadId, "info", `[age-rating] ${line}`),
       });
     });
-    if (!r.ok) failures.push({ step: "Content rating", error: r.error! });
+    if (!r.ok) {
+      failures.push({ step: "Content rating", error: r.error! });
+      ratingApiFailed = ratingNeedsConsoleFallback(r.error!);
+    }
+  }
+
+  // 6b) Console fallback for everything the API can't touch: content rating,
+  //     collect personal data, generative AI declaration, release time. Runs
+  //     when either the rating API failed or when the template explicitly
+  //     requests those console-only fields.
+  const wantsConsoleVersionInfo =
+    ratingApiFailed ||
+    template.collectPersonalData === false ||
+    template.genAiNotInvolved === true ||
+    template.releaseImmediately === true;
+
+  if (wantsConsoleVersionInfo && (await consoleAvailable(uploadId))) {
+    const r = await publishStep(
+      uploadId,
+      "publish:console-version-info",
+      "Console fallback: content rating + personal data + AI + release time",
+      98,
+      async () => {
+        const results = await runConsoleFlow(appId, {
+          setContentRating: ratingApiFailed || template.autoContentRating === true,
+          setPersonalData: template.collectPersonalData === false,
+          setAi: template.genAiNotInvolved === true,
+          setReleaseTime: template.releaseImmediately === true,
+          onLog: (line) => logEvent(uploadId, "info", `[console] ${line}`),
+        });
+        const failed = results.filter((x) => !x.ok);
+        if (failed.length > 0) {
+          throw new Error(failed.map((f) => `${f.step}: ${f.error}`).join("; "));
+        }
+      },
+    );
+    if (r.ok) {
+      // Recover content-rating from the failures list.
+      const idx = failures.findIndex((f) => f.step === "Content rating");
+      if (idx >= 0) failures.splice(idx, 1);
+    } else {
+      failures.push({ step: "Console version-info fallback", error: r.error! });
+    }
   }
 
   // 7) Submit for review (if enabled). Non-critical failures (template, content rating)
@@ -409,6 +562,28 @@ export async function stepPublishToHuawei(uploadId: string) {
     if (r.ok) {
       await setStatus(uploadId, { status: "SUBMITTED", currentStep: "submitted", progress: 100 });
       await logEvent(uploadId, "info", "Successfully uploaded + submitted to Huawei AppGallery");
+    } else if (submitNeedsConsoleFallback(r.error!) && (await consoleAvailable(uploadId))) {
+      // Try console fallback for Submit-for-review when API complains about
+      // "Incomplete application version information".
+      await logEvent(uploadId, "warn", `API submit failed (${r.error}). Falling back to console Submit.`);
+      const r2 = await publishStep(uploadId, "publish:submit", "Submit for review (console)", 99, async () => {
+        const results = await runConsoleFlow(appId, {
+          submit: true,
+          onLog: (line) => logEvent(uploadId, "info", `[console] ${line}`),
+        });
+        const failed = results.filter((x) => !x.ok);
+        if (failed.length > 0) {
+          throw new Error(failed.map((f) => `${f.step}: ${f.error}`).join("; "));
+        }
+      });
+      if (r2.ok) {
+        await setStatus(uploadId, { status: "SUBMITTED", currentStep: "submitted", progress: 100 });
+        await logEvent(uploadId, "info", "Submitted to Huawei AppGallery via console fallback");
+      } else {
+        failures.push({ step: "Submit for review", error: r.error! });
+        await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });
+        await logEvent(uploadId, "error", `Submit fallback failed: ${r2.error}. Submit manually in the console.`);
+      }
     } else {
       failures.push({ step: "Submit for review", error: r.error! });
       await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });

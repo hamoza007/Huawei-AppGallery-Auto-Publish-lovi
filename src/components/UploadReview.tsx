@@ -143,6 +143,24 @@ export function UploadReview({ upload: initial }: { upload: UploadData }) {
     if (res.ok) router.refresh();
   }
 
+  const [consoleBusy, setConsoleBusy] = useState<string | null>(null);
+  async function runConsoleFallback(steps: string) {
+    setConsoleBusy(steps);
+    try {
+      const res = await fetch(
+        `/api/uploads/${upload.id}/console-fallback?steps=${encodeURIComponent(steps)}`,
+        { method: "POST" },
+      );
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) alert(`Console fallback failed: ${json.error ?? res.statusText}`);
+    } catch (e) {
+      alert(`Console fallback failed: ${(e as Error).message}`);
+    } finally {
+      setConsoleBusy(null);
+      router.refresh();
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="card">
@@ -306,6 +324,38 @@ export function UploadReview({ upload: initial }: { upload: UploadData }) {
 
           <PublishStepsPanel upload={upload} />
 
+          {(upload.status === "FAILED" ||
+            upload.status === "UPLOADED" ||
+            upload.status === "SUBMITTED") && (
+            <div className="card">
+              <h3 className="mb-2 font-semibold">Console fallback</h3>
+              <p className="mb-2 text-xs text-neutral-500">
+                Re-run only the Huawei Console steps (uses the on-host Chromium profile).
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {[
+                  { key: "all", label: "All" },
+                  { key: "category", label: "Category" },
+                  { key: "countries", label: "Countries" },
+                  { key: "content-rating", label: "Content rating" },
+                  { key: "personal-data", label: "Personal data" },
+                  { key: "ai", label: "AI declaration" },
+                  { key: "release-time", label: "Release time" },
+                  { key: "submit", label: "Submit" },
+                ].map((s) => (
+                  <button
+                    key={s.key}
+                    disabled={consoleBusy !== null}
+                    onClick={() => runConsoleFallback(s.key)}
+                    className="rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-neutral-50 disabled:opacity-50"
+                  >
+                    {consoleBusy === s.key ? "…" : s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="card">
             <h3 className="mb-2 font-semibold">Activity</h3>
             <ul className="max-h-96 space-y-1.5 overflow-y-auto text-xs">
@@ -419,12 +469,14 @@ function LocalizationEditor({
 
 // Publish sub-step definitions for the progress panel.
 const PUBLISH_STEP_DEFS: { id: string; label: string }[] = [
-  { id: "publish:template", label: "Countries / Category / Template" },
+  { id: "publish:template", label: "Countries / Category / Template (API)" },
+  { id: "publish:console-app-info", label: "Console fallback: App info" },
   { id: "publish:metadata", label: "Localized metadata" },
   { id: "publish:icon", label: "App icon" },
   { id: "publish:screenshots", label: "Screenshots" },
   { id: "publish:apk", label: "Upload APK" },
-  { id: "publish:rating", label: "Content rating" },
+  { id: "publish:rating", label: "Content rating (API)" },
+  { id: "publish:console-version-info", label: "Console fallback: Rating / Personal data / AI / Release" },
   { id: "publish:submit", label: "Submit for review" },
 ];
 
