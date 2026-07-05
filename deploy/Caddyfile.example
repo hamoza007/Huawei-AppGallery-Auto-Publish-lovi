@@ -1,0 +1,48 @@
+# Caddy reverse-proxy config for the Huawei AppGallery auto-publish app.
+#
+# Copy to /etc/caddy/Caddyfile (or drop into /etc/caddy/conf.d/ if you use an
+# `import` line). Caddy will provision a Let's Encrypt cert automatically the
+# first time it starts, as long as ports 80 and 443 reach this host and the
+# domain's A record already points here.
+#
+# Usage:
+#   sudo cp deploy/Caddyfile.example /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+
+hwcodex.shopinzo.bond {
+    # Trust the local pm2 web process on port 3000.
+    reverse_proxy 127.0.0.1:3000 {
+        # Chunked uploads and long-running publish requests need generous
+        # buffers / timeouts.
+        transport http {
+            read_buffer 64KB
+            write_buffer 64KB
+        }
+    }
+
+    # Increase request body limit for large APK uploads (chunk endpoint splits
+    # 60-75 MB APKs into 5 MB chunks so 20 MB is plenty of headroom).
+    request_body {
+        max_size 25MB
+    }
+
+    # Compress everything except APK/AAB responses (already compressed).
+    encode zstd gzip
+
+    # Access + error logs.
+    log {
+        output file /var/log/caddy/hwcodex.access.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+        format console
+    }
+
+    # Basic security headers.
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+}

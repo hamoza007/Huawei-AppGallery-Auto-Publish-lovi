@@ -29,9 +29,13 @@ interaction is delegated to the Fastlane plugin (see `fastlane_runner/` and
 5. **Review**: a *Pending review* card lets you edit any locale or screenshot.
 6. **Publish**: on approval the worker pushes localized metadata via `huawei_appgallery_connect_update_app_localization`, then uploads + submits via the `huawei_appgallery_connect` action.
 
-> **Console-only prerequisites:** the target app's category, content-rating
-> questionnaire, age rating, and distribution countries must already be
-> configured in AppGallery Connect — these are not exposed by the plugin's API.
+> **Console-only fields are now automated too.** Huawei’s Connect Publishing
+> API cannot set the content-rating questionnaire, “Collect personal data”,
+> “Generative AI service”, “Release time”, and (for brand-new apps) category /
+> distribution countries. The worker drives those through the Huawei Developer
+> Console via a persistent Chromium profile in Playwright. Log in once with
+> `npx tsx scripts/huawei-login.ts` and the profile stays on disk for the
+> worker. See [`deploy/README.md`](./deploy/README.md) for full VPS setup.
 
 ## APK download + analyzer
 Paste one or many public AppGallery links or **C-codes** (bulk). For each, the
